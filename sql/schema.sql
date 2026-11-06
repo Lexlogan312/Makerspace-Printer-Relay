@@ -214,6 +214,57 @@ end $$;
 revoke all on function public.add_printer(text, text, text) from public, anon;
 grant execute on function public.add_printer(text, text, text) to authenticated;
 
+-- ───────────────────────────── Printer error codes (public) ─────────────────────────────
+-- What each printer error code means, so the dashboard can say "Filament ran out" instead of
+-- "07FF-8011", and the reliability stats count only real printer problems. `details` is Bambu's own
+-- text for the A1 (from Bambu Studio's error tables). A code not listed here counts as a printer
+-- problem and shows as "Printer error <code>" until a row is added for it.
+--   printer   the printer needs fixing (counts against its reliability)
+--   filament  ran out or stuck (counted separately, for restocking)
+--   loading   prompts while someone loads or unloads filament (not a problem)
+--   file      the print file or job, not the printer (not a problem)
+--   power     lost power mid-print (not a problem)
+--   canceled  someone canceled the print (not a problem)
+create table if not exists public.printer_error_codes (
+  code     text primary key,                 -- as Bambu writes it, e.g. '07FF-8011'
+  category text not null check (category in ('printer', 'filament', 'loading', 'file', 'power', 'canceled')),
+  label    text not null,                    -- short, shown to everyone
+  details  text                              -- Bambu's full text, shown to staff
+);
+alter table public.printer_error_codes enable row level security;
+drop policy if exists "public read" on public.printer_error_codes;
+create policy "public read" on public.printer_error_codes for select using (true);
+
+insert into public.printer_error_codes (code, category, label, details) values
+  ('0300-400C', 'canceled', 'Print canceled', 'The task was canceled.'),
+  ('0300-4000', 'printer', 'Z axis homing failed', 'Z axis homing failed; the task has been stopped.'),
+  ('0300-4002', 'printer', 'Bed leveling failed', 'Auto Bed Leveling failed; the task has been stopped.'),
+  ('0300-8008', 'printer', 'Nozzle temperature problem', 'Nozzle temperature malfunction'),
+  ('0300-8014', 'printer', 'Filament clumped on the nozzle', 'Nozzle clumping detected. If clumping is confirmed, cancel the print and clean the nozzle; if not, click “Resume”.'),
+  ('0300-8019', 'printer', 'No build plate detected', 'Build plate not detected. Please ensure there are no bulges or debris on the plate and that the nozzle is clean.'),
+  ('0500-400C', 'printer', 'No MicroSD card', 'Please insert a MicroSD card and restart the print job.'),
+  ('0500-402F', 'printer', 'MicroSD card damaged', 'The MicroSD card sector data is damaged. Please use the SD card repair tool to repair or format it. If it still cannot be identified, please replace the MicroSD card.'),
+  ('0500-C010', 'printer', 'MicroSD card read/write error', 'MicroSD Card read/write exception: please reinsert or replace the MicroSD Card.'),
+  ('07FF-8010', 'filament', 'Filament stuck', 'Check if the external filament spool or filament is stuck.'),
+  ('07FF-8011', 'filament', 'Filament ran out', 'External filament has run out; please load a new filament.'),
+  ('07FF-8003', 'loading', 'Loading filament', 'Please pull out the filament on the spool holder. If this message persists, please check to see if there is filament broken in the extruder. (Connect a PTFE tube if you are about to use an AMS.)'),
+  ('07FF-8006', 'loading', 'Loading filament', 'Please feed filament into the PTFE tube until it can not be pushed any farther.'),
+  ('07FF-8007', 'loading', 'Loading filament', 'Please observe the nozzle. If the filament has been extruded, select "Done"; if not, please push the filament forward slightly, and then select "Retry".'),
+  ('07FF-C003', 'loading', 'Loading filament', 'Please pull out the filament on the spool holder. If this message persists, please check to see if there is filament broken in the extruder or PTFE tube. (Connect a PTFE tube if you are about to use an AMS)'),
+  ('07FF-C006', 'loading', 'Loading filament', 'Please feed filament into the PTFE tube until it can not be pushed any farther.'),
+  ('0500-4002', 'file', 'Unsupported file name', 'Unsupported print file path or name. Please resend the print job.'),
+  ('0500-4003', 'file', 'Couldn''t read the print file', 'Printing stopped because the printer was unable to parse the file. Please resend your print job.'),
+  ('0500-4004', 'file', 'Printer busy', 'Device is busy and cannot start new task. Please wait for current task to complete before sending new task.'),
+  ('0300-8007', 'power', 'Lost power mid-print', 'There was an unfinished print job when the printer lost power. If the model is still adhered to the build plate, you can try resuming the print job.'),
+  ('0300-400D', 'power', 'Couldn''t resume after power loss', 'Resume failed after power loss.')
+on conflict (code) do update
+  set category = excluded.category, label = excluded.label, details = excluded.details;
+
+-- A code's category; anything unlisted counts as a printer problem.
+create or replace function public.error_category(p_code text)
+returns text language sql stable set search_path = ''
+as $$ select coalesce((select category from public.printer_error_codes where code = upper(p_code)), 'printer') $$;
+
 -- ───────────────────────────── Analytics views (staff only) ─────────────────────────────
 -- Every stat uses full 24-hour days in the makerspace's time zone. Days with no activity have no
 -- row, so treat a missing day as 0. The views use security_invoker, so they follow the staff-only
@@ -295,7 +346,7 @@ select (started_at at time zone public.analytics_time_zone())::date as day,
 from public.print_jobs
 group by 1, 2, 3;
 
--- Reliability: hours offline and new errors per printer per day.
+-- Reliability: hours offline, printer problems and filament problems per printer per day.
 create view public.printer_reliability_daily with (security_invoker = true) as
 with connection_changes as (
   select printer_id, ts, to_value,
@@ -319,16 +370,21 @@ offline as (
   group by 1, 2
 ),
 errors as (
-  select printer_id, (ts at time zone public.analytics_time_zone())::date as day, count(*) as errors
+  -- errors: problems with the printer itself; filament_problems: ran out or stuck. Cancels,
+  -- filament loading, print-file problems and power cuts aren't the printer's fault.
+  select printer_id, (ts at time zone public.analytics_time_zone())::date as day,
+         count(*) filter (where public.error_category(to_value) = 'printer') as errors,
+         count(*) filter (where public.error_category(to_value) = 'filament') as filament_problems
   from public.printer_events
-  where kind = 'error' and to_value <> '0300-400C'  -- a canceled print isn't a printer problem
+  where kind = 'error'
   group by 1, 2
 )
 select coalesce(o.day, e.day) as day,
        p.id as printer_id,
        p.label as printer_label,
        round(coalesce(o.offline_hours, 0)::numeric, 2) as offline_hours,
-       coalesce(e.errors, 0) as errors
+       coalesce(e.errors, 0) as errors,
+       coalesce(e.filament_problems, 0) as filament_problems
 from offline o
 full join errors e on e.printer_id = o.printer_id and e.day = o.day
 join public.printers p on p.id = coalesce(o.printer_id, e.printer_id);

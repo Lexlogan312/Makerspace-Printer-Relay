@@ -20,6 +20,7 @@ and running it again brings an older database up to date.
 | `printer_events` | relay | admins | Each online/offline change, `gcode_state` change, and new error |
 | `relay_heartbeats` | relay | admins | One row per minute the relay is running and can reach Supabase |
 | `admins` | you, in the SQL editor | nobody (`is_admin()` checks it) | Which signed-in users are admins |
+| `printer_error_codes` | `sql/schema.sql` | everyone | What each printer error code means: a group (`printer`, `filament`, `loading`, `file`, `power`, `canceled`), a short label for the board, and Bambu's full text. Unlisted codes count as `printer` |
 | Storage bucket `printer-snapshots` | relay | everyone (public bucket, no listing) | `<printer id>.jpg`: the latest camera photo of each printing printer, replaced each minute while someone has the board's Photos switch on, otherwise every 10 minutes. The dashboard adds `?v=<snapshot_at>` so a new photo never shows a cached old one |
 
 ### Old history is deleted after 92 days
@@ -103,7 +104,7 @@ Every stat uses full 24-hour days in the `America/New_York` time zone (set in
 | `busy_hours_daily` | day, weekday (1 = Mon), hour, busy_printers | Average printers printing in that hour. Average over weeks for the heatmap |
 | `print_jobs_daily` | day, printer_id, printer_label, jobs_started, finished, failed, unknown, in_progress, avg_finished_minutes, canceled | Job counts by outcome |
 | `filament_usage_daily` | day, filament_type, color_name, jobs, printing_hours | Which filament gets used |
-| `printer_reliability_daily` | day, printer_id, printer_label, offline_hours, errors (cancellations excluded) | Printers that may need maintenance |
+| `printer_reliability_daily` | day, printer_id, printer_label, offline_hours, errors, filament_problems | Printers that may need maintenance. `errors` counts only printer problems (see `printer_error_codes`); running out of or jamming filament is counted separately |
 | `relay_uptime_daily` | day, minutes_up, minutes_total, uptime_percent, max_latency_ms, p95_latency_ms, avg_printers_online | The >95% uptime and <10 s latency goals |
 | `print_job_hours` | job_id, printer_id, printer_label, day, weekday, hour, hours | Building block for the views above |
 
@@ -113,3 +114,17 @@ For a longer period, add up the daily rows, for example
 
 **Latency** is measured from the first printer report after the previous push to Supabase
 confirming the write, and it doesn't include the dashboard's own Realtime delay.
+
+## Printer error codes
+
+Printers report errors as codes like `07FF-8011`. `printer_error_codes` gives each one a group
+and a short label, and `error_category(code)` returns a code's group (`printer` when it isn't
+listed). To add a code that shows up as "Printer error …" on the dashboard, look it up in Bambu's
+A1 error list (Bambu Studio's `resources/hms/hms_en_26A.json`, under `device_error`) and add a row:
+
+```sql
+insert into public.printer_error_codes (code, category, label, details)
+values ('XXXX-XXXX', 'printer', 'Short label', 'Bambu''s text for this code');
+```
+
+Add it to `sql/schema.sql` as well, so a fresh setup has it too.
