@@ -1,116 +1,108 @@
 # Makerspace Printer Relay
 
-Runs on a Raspberry Pi in the ONU Makerspace. It reads live status from the Bambu Lab printers
-over their local MQTT connection (`mqtts://<printer-ip>:8883`, user `bblp`, password = LAN
-access code, topic `device/<serial>/report`) and sends it to Supabase for the
-[printer dashboard](https://github.com/Lexlogan312/makerspace-3d-printer-web-app). It also
-records history (print jobs, state changes, uptime) for the staff analytics, and saves camera
-photos.
+A Python service that runs on a Raspberry Pi in the ONU Makerspace. It collects live status,
+print history and camera photos from the Bambu Lab printers on the local network and writes
+them to Supabase, where the [printer dashboard](https://github.com/Lexlogan312/makerspace-3d-printer-web-app)
+reads them.
 
 ```
-printers ──MQTT──▶ relay (Pi) ──REST──▶ Supabase ◀── dashboard (React on Vercel)
-    └── IP announcements (UDP 2021) ──▶ relay
+Bambu printers ──MQTT (TLS, 8883)──▶ Relay (Raspberry Pi) ──HTTPS──▶ Supabase ◀── Dashboard (Vercel)
+               ──UDP announcements──▶
 ```
 
-- **Printers are managed in the dashboard**, not in a config file. Staff add, rename, reserve,
-  retire and fix access codes there, and the relay picks up changes on its own.
-- **IPs are found automatically.** Printers announce themselves every ~10 s, and the relay
-  connects to (and saves) each printer's current IP.
-- **It never controls a print.** Its messages to a printer are `pushall` (asking for a full
-  status report, since A1s otherwise only send changed fields) and, if turned on, switching the
-  printer's light for clearer photos.
+The relay is read-only with respect to printing. The
+only commands it sends are a request for a full status report and, if enabled, switching a
+printer's light on for camera photos.
+
+## Requirements
+
+- Python 3.13 and [uv](https://docs.astral.sh/uv/)
+- A Supabase project with [`sql/schema.sql`](sql/schema.sql) applied
+- Network access to the printers and to Supabase
+- Printers in **LAN Only Mode**, with their access codes entered in the dashboard
 
 ## Setup
 
-1. **Database.** In the Supabase SQL Editor, paste and run [`sql/schema.sql`](sql/schema.sql).
-   It creates every table, view, access rule and the photo bucket. It's also safe to run again,
-   and running it on an older database brings it up to date (stop the relay first, then update
-   and restart it afterwards).
-2. **Staff.** Invite each person under *Authentication → Users*. Once they've accepted, make them
-   staff in the SQL Editor:
-   ```sql
-   insert into public.admins (user_id) select id from auth.users where email = '<their email>';
-   ```
-3. **Config.** Copy the template and fill in the Supabase URL and **secret** key:
+1. **Database.** Run [`sql/schema.sql`](sql/schema.sql) in the Supabase SQL Editor. It creates
+   every table, access rule, analytics view, the photo bucket and the nightly cleanup.
+2. **Configuration.** Copy the template and fill in the Supabase project URL and **secret** key:
    ```bash
    cp relay.example.toml relay.toml
    ```
-   `relay.toml` is gitignored. Never commit it or put the secret key anywhere else.
-4. **Run it** on a computer on the same network as the printers:
+   `relay.toml` is gitignored and must never be committed or shared.
+3. **Install and test:**
    ```bash
    uv sync
-   uv run python -m relay --dry-run         # read-only: prints each printer's status
-   uv run python -m relay                   # for real
-   uv run python -m relay --dump-raw raw/   # also save raw MQTT messages (handy for tests)
-   uv run pytest                            # tests
+   uv run pytest
+   uv run python -m relay --dry-run   # prints each printer's status
    ```
-5. **Add printers** from the dashboard: once a printer joins the hotspot, it shows up on the
-   Printers page as found on the network.
+4. **Deploy on the Pi.** Follow [docs/raspberry-pi-setup.md](docs/raspberry-pi-setup.md), which
+   covers the printer hotspot, firewall and systemd service (files in `deploy/`).
 
-To deploy on the Pi (hotspot, firewall, service), follow
-[docs/raspberry-pi-setup.md](docs/raspberry-pi-setup.md). The service and firewall files are in
-`deploy/`.
+Printers are managed from the dashboard. A printer that joins the hotspot
+appears on the dashboard's Printers page and the relay connects once it's added.
 
-## Camera photos
+## Configuration
 
-The relay saves still photos from each printer's built-in camera (on by default; `[camera]` in
-`relay.toml` turns it off or changes the timing):
+All settings are in `relay.toml`; [`relay.example.toml`](relay.example.toml) documents each one
+and its default.
 
-- **printing**, while someone has the board's Photos switch on: every minute
-- **everything else** (open printers, and printing ones while nobody has Photos on): every
-  10 minutes, plus one right after each print ends so people can see whether the plate is clear
-- **while someone has a printer's details open**: every 4 seconds, for up to 6 printers at once
-  (`watch_max`, up to 20). The dashboard stops this after 3 minutes unless they resume it.
-
-Who's watching comes from Supabase Realtime Presence (channel `camera-watch`): the dashboard joins
-it while a printer is open or while Photos is on, and the relay listens, so nothing polls the
-database. Each photo replaces the printer's last one in the public Storage bucket
-`printer-snapshots`, and `printer_status.snapshot_at` says when it was taken. Only the relay can
-upload, and nobody can list the bucket.
-
-A photo is one ~65 KB frame, so even the fast refresh is light on the hotspot. Test one printer:
-
-```bash
-uv run python -m relay.camera --printer "Fred Printstone" --out fred.jpg   # uses relay.toml
-uv run python -m relay.camera --host 10.42.0.112 --code 12345678         # or by IP + access code
-```
-
-This has to run on the printer network (on the Pi, or a laptop joined to `MakerspacePrinters`).
-If it fails, the message says why. A flat tan or gray blur means the protective film is still on
-the camera lens.
-
-**Printer lights.** With `light = "auto"` under `[camera]` (off by default), the relay turns a
-printer's light on while it prints (and for 30 s after, for the photo of the result) or while
-someone watches it, and off again afterwards. It only turns off lights it turned on. Check that
-every printer accepts it first: `uv run python -m relay.light --all`.
-
-## Supabase usage
-
-Every request to Supabase is logged, and the Free plan includes 1 GB of logs a month, so the relay
-keeps requests down: status is pushed when something a student would see changes (temperature and
-layer number alone don't count; they ride along), unchanged printers are refreshed together in a
-single request, and camera viewers arrive over Realtime instead of being polled.
-
-## What's in the database
-
-See [docs/database.md](docs/database.md) for every table and analytics view, who writes what,
-and how print jobs are tracked.
-
-## Code layout
-
-| File | What it does |
+| Section | Key settings |
 |---|---|
-| `relay/__main__.py` | Command line: loads `relay.toml`, starts the relay, stops cleanly on Ctrl+C / SIGTERM |
-| `relay/app.py` | The main loop: sync printers, fix connections, push status, record history, heartbeat, lights |
-| `relay/config.py` | Reads `relay.toml`. Defines `Printer`, a printer as stored in Supabase |
-| `relay/database.py` | Every Supabase read and write (REST API and Storage), plus the `--dry-run` version |
-| `relay/discovery.py` | Listens for printers' UDP announcements to learn their IP, model and firmware |
-| `relay/printer.py` | One MQTT connection per printer. Merges the partial reports into a full state |
-| `relay/status.py` | Raw printer data → the status record (state, progress, time left, filament, …) |
-| `relay/history.py` | Status changes → `printer_events` rows and one `print_jobs` row per print |
-| `relay/camera.py` | Camera photos: the printer's port-6000 frame protocol, the background worker, and a test command |
-| `relay/presence.py` | Who's watching which printer on the dashboard (Supabase Realtime Presence) |
-| `relay/light.py` | Test command for printer lights (the relay's own light control is in `app.py`) |
-| `tests/` | Tests (`uv run pytest`); shared fakes are in `tests/fixtures.py` |
-| `sql/schema.sql` | The whole database, run in the Supabase SQL Editor |
-| `deploy/` | The systemd service and the hotspot firewall for the Pi |
+| `[supabase]` | `url`, `key`. `SUPABASE_URL` / `SUPABASE_KEY` environment variables override them. |
+| `[relay]` | `printer_network` (only accept printers on this subnet), push and sync intervals |
+| `[camera]` | `enabled`, photo intervals, `watch_max`, and `light` (`"never"` or `"auto"`) |
+
+## Operation
+
+On the Pi the relay runs as the `printer-relay` systemd service.
+
+| Task | Command |
+|---|---|
+| Follow the logs | `journalctl -u printer-relay -f` |
+| Restart | `sudo systemctl restart printer-relay` |
+| Update | `cd ~/printer-relay && git pull && uv sync && sudo systemctl restart printer-relay` |
+| Test one printer's camera | `uv run python -m relay.camera --printer "<name>" --out photo.jpg` |
+| Test printer lights before enabling `light = "auto"` | `uv run python -m relay.light --all` |
+| Save raw MQTT messages for debugging | `uv run python -m relay --dump-raw raw/` |
+
+Connection problems are reported per printer on the dashboard and in
+`printer_connections.last_error`. See the troubleshooting table in
+[docs/raspberry-pi-setup.md](docs/raspberry-pi-setup.md#troubleshooting).
+
+## How it works
+
+- **Discovery:** printers broadcast their IP, model and firmware every ~10 s; the relay connects
+  to each printer's current address, so DHCP changes need no action.
+- **Status:** each printer's MQTT reports are merged into a full state and pushed to
+  `printer_status` when anything visible changes; unchanged printers are refreshed together in a
+  single request to keep Supabase usage low.
+- **History:** state changes become `printer_events` rows and each print becomes one `print_jobs`
+  row, which feed the staff analytics. A heartbeat is recorded every minute for uptime tracking.
+- **Camera:** still photos are uploaded to the public `printer-snapshots` bucket, more often while
+  someone is viewing that printer.
+- **Resilience:** each step of the main loop runs independently, so one failure doesn't stop the others; 
+  failed writes are retried.
+
+The database, access rules and analytics views are documented in [docs/database.md](docs/database.md).
+
+## Project structure
+
+```
+relay/
+  __main__.py     command line entry point
+  app.py          main loop: printer sync, connections, status, history, heartbeat, lights
+  config.py       relay.toml parsing
+  database.py     Supabase REST and Storage access
+  discovery.py    UDP printer announcements
+  printer.py      MQTT connection per printer
+  status.py       raw printer data → status record
+  history.py      printer_events and print_jobs
+  camera.py       camera photos and the camera test command
+  presence.py     who is viewing which printer
+  light.py        printer light test command
+tests/            pytest suite
+sql/schema.sql    complete database setup
+deploy/           systemd units and firewall rules for the Pi
+docs/             Pi setup guide and database reference
+```

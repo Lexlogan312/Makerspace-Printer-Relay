@@ -1,0 +1,16 @@
+# Runs the test suite on every push and pull request. A red ✗ on GitHub means a change broke
+# something; fix it before pulling the update onto the Pi.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest

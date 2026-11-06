@@ -1,73 +1,65 @@
 # Raspberry Pi setup
 
-This guide takes a brand-new Raspberry Pi 5 to a running relay:
+This guide takes a brand-new Raspberry Pi 5 to a running relay. No Linux experience is needed:
+run the commands as written and check each result before moving on.
 
 ```
- Bambu A1 printers ──Wi-Fi──▶ wlan0: "MakerspacePrinters" hotspot (10.42.0.0/24, no internet)
+ Bambu printers ──Wi-Fi──▶ wlan0: "MakerspacePrinters" hotspot (10.42.0.0/24, no internet)
                                    │
-                              Raspberry Pi 5 ── printer-relay.service
+                              Raspberry Pi 5 ── printer-relay service
                                    │
- Supabase ◀── internet ── eth0 (Ethernet) or wlan1 (USB Wi-Fi) on the campus network
+ Supabase ◀── internet ── eth0: Ethernet to the campus network
 ```
 
-Do the steps in order. The Pi needs internet for steps 2–6, and step 7 turns the
-built-in Wi-Fi into the printer hotspot. That's why the campus connection has to be
-on a **second** interface (step 5) before you get there.
+The Pi's built-in Wi-Fi becomes a private hotspot that only the printers join. It has no
+internet access, and a firewall keeps it that way. The Pi reaches Supabase over Ethernet.
 
-**Where:** steps 1–4 work anywhere with Wi-Fi, including at home. Steps 5–10 happen in the
-makerspace, on the campus network and near the printers.
+**Where:** do everything in the makerspace, with the Pi plugged into a campus Ethernet port.
 
-**No monitor needed.** Everything is done over SSH from your Mac. Have a fallback ready in case
-a network change cuts you off:
-- a **micro-HDMI** cable (the Pi 5 has micro-HDMI ports) plus a monitor and USB keyboard, or
-- an **Ethernet cable** straight from your Mac (or a USB-C Ethernet adapter) to the Pi. Then
-  `ssh <username>@makerspace-relay.local` works with no network at all.
+**No monitor needed** after the first boot. Everything is done over SSH from a computer on the
+campus network, or from a browser with Raspberry Pi Connect (step 2).
 
 ## What you need
 
 - Raspberry Pi 5, the official 27 W USB-C power supply, and a microSD card (16 GB or more)
-- A campus connection that doesn't use the built-in Wi-Fi. Pick one:
-  - **Ethernet** to a campus port (easiest and most reliable), or
-  - a **USB Wi-Fi adapter** with Linux drivers, for campus Wi-Fi
-- A computer with [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-- Your working `relay.toml` (Supabase URL and **secret** key `sb_secret_…`), and the database
-  already set up with `sql/schema.sql` (see the README)
-
-> **Check with ONU IT first.** Campus networks usually need headless devices
-> registered by MAC address, and campus Wi-Fi is usually WPA2-Enterprise (username and password)
-> or has a sign-in page, which a headless Pi can't get through. Ask which network and
-> registration process to use for an always-on lab device. Get the Pi's MAC addresses with
-> `ip link` after step 2.
+- An Ethernet cable and a working campus Ethernet port.
+- A computer with [Raspberry Pi Imager](https://www.raspberrypi.com/software/), on the campus network
+- The Supabase project URL and **secret** key (`sb_secret_…`), with the database already set up
+  by `sql/schema.sql` (see the README)
 
 ---
 
-## 1. Flash the SD card
+## 1. Flash the SD card and find the Pi
 
 1. Open Raspberry Pi Imager → **Device:** Raspberry Pi 5 → **OS:** *Raspberry Pi OS (other) →
    Raspberry Pi OS Lite (64-bit)* → **Storage:** your SD card.
-2. Fill in the customization settings. Imager 2 walks you through them; older versions show an
-   **Edit settings** button:
+2. Fill in the customization settings:
    - Hostname: `makerspace-relay`
-   - Username and password: pick your own and write them down (they go in the handoff notes)
-   - Wireless LAN: your home Wi-Fi (or your phone's hotspot), so you can do steps 2–4 without
-     Ethernet. Set the **Wireless LAN country to US** either way.
+   - Username and password: e.g. `makerspace`, with a strong password
+   - **Wireless LAN: leave it off.** The Pi uses Ethernet, and its Wi-Fi becomes the printer
+     hotspot. Do set the **Wireless LAN country to US**.
    - Locale: time zone `America/New_York`
-   - **Services** tab: enable SSH (a public key is better; a password works)
-3. Write the card, put it in the Pi, connect Ethernet if you have it, and power on.
-   The first boot takes a couple of minutes.
+   - **Services:** enable SSH with password authentication, so whoever maintains the Pi can log in
+3. Write the card, put it in the Pi, plug in Ethernet, the monitor and keyboard, then power on.
+   The first boot takes a few minutes and restarts once.
+4. Log in on the Pi's screen and note its addresses:
+   ```bash
+   hostname -I                       # the Pi's IP on campus, e.g. 192.168.20.128
+   ```
+
+You can unplug the monitor and keyboard now.
+
+> **Use the IP address, not `makerspace-relay.local`.**
 
 ## 2. Log in and update
 
-From your Mac, on the same network as the Pi:
+From your computer, on the campus network:
 
 ```bash
-ssh <username>@makerspace-relay.local
+ssh makerspace@<the Pi's IP>
 ```
 
-If `.local` doesn't resolve (common on campus networks), find the Pi's IP from your
-router, or plug in a monitor and run `hostname -I`.
-
-On the Pi:
+The first time, type `yes` to trust the Pi, then enter its password. On the Pi:
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
@@ -76,56 +68,46 @@ sudo raspi-config nonint do_wifi_country US
 sudo reboot
 ```
 
-### Recommended: Raspberry Pi Connect (remote access from anywhere)
+- `git` downloads the relay code; `nftables` runs the hotspot firewall; `dnsmasq-base` gives
+  printers their addresses on the hotspot.
+- The Wi-Fi country tells the chip which channels are legal; the hotspot won't start without it.
 
-A backup way in that works even if the campus network blocks SSH between devices, since
-the Pi connects out to Raspberry Pi's servers. It needs a free Raspberry Pi ID. Use one the
-makerspace keeps (e.g. a shared makerspace email), with a strong password and two-factor login,
-because that account can open a terminal on the Pi. Skip this if you enabled Connect in Imager.
+Wait a minute after the reboot, then SSH back in.
+
+### Raspberry Pi Connect (remote access from anywhere)
+
+A backup way in that works from off campus and doesn't depend on the Pi's IP, because the Pi
+connects out to Raspberry Pi's servers. It needs a free Raspberry Pi ID; use an account with a 
+strong password and two-factor login, since it can open a terminal on the Pi.
 
 ```bash
 sudo apt install -y rpi-connect-lite
 rpi-connect on
 loginctl enable-linger      # keep it running when nobody is logged in
-rpi-connect signin          # open the printed link on your Mac and approve the Pi
+rpi-connect signin          # open the printed link in a browser and approve the Pi
+rpi-connect status          # should say "Signed in: yes"
 ```
 
 To use it: go to connect.raspberrypi.com → your Pi → **Remote shell**.
 
-## 3. Get the code onto the Pi
-
-**If the repo is on GitHub:**
+## 3. Get the code and configure it
 
 ```bash
-git clone https://github.com/<you>/<repo>.git ~/printer-relay
+git clone https://github.com/Lexlogan312/Makerspace-Printer-Relay.git ~/printer-relay
+cd ~/printer-relay
+cp relay.example.toml relay.toml
+chmod 600 relay.toml
+nano relay.toml
 ```
 
-**Otherwise, copy it from your Mac.** Run this in the project folder on the Mac:
+In `nano`, fill in:
+- `url`: Supabase → Project Settings → Data API → Project URL
+- `key`: Supabase → Project Settings → API Keys → **Secret** key (`sb_secret_…`)
+- `printer_network = "10.42.0.0/24"`, so the relay ignores Bambu printers elsewhere on campus
 
-```bash
-rsync -av --exclude .venv --exclude raw --exclude .idea --exclude __pycache__ --exclude relay.toml ./ <username>@makerspace-relay.local:printer-relay/
-```
+Save with **Ctrl+O**, **Enter**, then exit with **Ctrl+X**.
 
-Then copy the config separately. It's gitignored because it holds the Supabase secret key:
-
-```bash
-scp relay.toml <username>@makerspace-relay.local:printer-relay/
-```
-
-On the Pi, make it readable only by you:
-
-```bash
-chmod 600 ~/printer-relay/relay.toml
-```
-
-Then edit it (`nano ~/printer-relay/relay.toml`) and set the printer network to the hotspot
-you'll create in step 7. Discovery then ignores any Bambu printers elsewhere on campus:
-
-```toml
-printer_network = "10.42.0.0/24"
-```
-
-## 4. Install Python dependencies
+## 4. Install the relay
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -135,70 +117,43 @@ uv sync
 uv run pytest
 ```
 
-`uv sync` downloads Python 3.13 if the OS has an older version, then creates `.venv`.
-All tests should pass.
+`uv` installs Python 3.13 and the relay's dependencies into `~/printer-relay/.venv`. All tests
+should pass.
 
-## 5. Set up the campus (internet) connection
-
-Run `nmcli device` to see the interfaces. `wlan0` is the built-in Wi-Fi, which will become the
-hotspot. The campus connection must be `eth0` or a USB adapter (`wlan1`).
-
-**Ethernet:** nothing to do. NetworkManager uses it automatically once the port is registered.
-
-**USB Wi-Fi adapter:** plug it in and confirm it shows up as `wlan1` in `nmcli device`. Then
-add the campus network. For a WPA2-Enterprise network (get the real settings from ONU IT):
-
-```bash
-sudo nmcli con add type wifi ifname wlan1 con-name campus ssid "<CAMPUS_SSID>" \
-  wifi-sec.key-mgmt wpa-eap 802-1x.eap peap 802-1x.phase2-auth mschapv2 \
-  802-1x.identity "<username>" 802-1x.password "<password>"
-sudo nmcli con up campus
-```
-
-For a normal password network, use this instead:
-
-```bash
-sudo nmcli dev wifi connect "<SSID>" password "<password>" ifname wlan1
-```
-
-Check that it works:
+## 5. Check the network and clean up first-boot files
 
 ```bash
 ping -c 3 supabase.com
 timedatectl
 ```
 
-`timedatectl` should say **System clock synchronized: yes**. The relay's timestamps and the
-TLS connection to Supabase both depend on the correct time. If it says no, ask IT for an
-NTP server and set it in `/etc/systemd/timesyncd.conf`.
+`ping` should get replies, and `timedatectl` should say **System clock synchronized: yes**.
 
-If you set up Wi-Fi in Imager (step 1), remove it now so `wlan0` is free for the hotspot.
-Current Raspberry Pi OS images apply Imager's settings with cloud-init, which can re-apply
-them, so turn it off (first-boot setup is finished), then delete every Wi-Fi profile.
-NetworkManager stores each profile as a file in `/etc/netplan/` (`90-NM-<id>.yaml`) and
-deletes the file along with the profile.
-
-> **Don't cut off your own connection.** If you're SSH'd in over that Wi-Fi, deleting it
-> disconnects you. First get the Pi's campus IP with `ip -4 addr show eth0` (or `wlan1`), check
-> you can `ssh <username>@<that IP>` from your Mac on the campus network, and run the delete
-> from that session. Write the IP down: `.local` names often don't work on campus networks.
->
-> Some campus networks also block devices from connecting to each other. If you can't reach
-> the Pi from your Mac on campus, use the Ethernet-cable fallback above, and ask IT whether
-> the Pi's network allows SSH from your laptop for later maintenance.
+Imager's first-boot setup (cloud-init) has done its job. Turn it off so it does not re-apply old
+settings, and delete its files from the SD card.
 
 ```bash
-sudo touch /etc/cloud/cloud-init.disabled     # stop first-boot setup from re-applying anything
-nmcli -f NAME,UUID,TYPE con show              # note which entry is the Ethernet one
-# delete every Wi-Fi profile (by id, so odd characters in names don't matter). Ethernet is untouched
+sudo touch /etc/cloud/cloud-init.disabled
+sudo rm -f /boot/firmware/user-data /boot/firmware/network-config /boot/firmware/meta-data
+rm -f ~/.config/com.raspberrypi.connect/auth.key
+```
+
+Then make sure no Wi-Fi network is saved, so `wlan0` is free for the hotspot:
+
+```bash
+nmcli -f NAME,TYPE con show
+```
+
+Only the Ethernet connection (e.g. `netplan-eth0`) and `lo` should be listed. If a Wi-Fi entry
+(type `wifi`) is there, delete it:
+
+```bash
 nmcli -t -f UUID,TYPE con show | awk -F: '$2=="802-11-wireless"{print $1}' | xargs -r -n1 sudo nmcli con delete uuid
-nmcli con show                                # only the Ethernet profile and lo should be left
-ls /etc/netplan/                              # one 90-NM-... file left: the Ethernet profile
 ```
 
 ## 6. Choose a hotspot channel
 
-The A1 only supports **2.4 GHz**. Before `wlan0` becomes a hotspot, see which channels are busy:
+The printers only use **2.4 GHz**. See which channels nearby networks use:
 
 ```bash
 nmcli -f SSID,CHAN,SIGNAL dev wifi list ifname wlan0
@@ -206,9 +161,9 @@ nmcli -f SSID,CHAN,SIGNAL dev wifi list ifname wlan0
 
 Pick whichever of **1, 6 or 11** has the fewest strong networks.
 
-## 7. Create the printer hotspot and the isolation firewall
+## 7. Create the hotspot and its firewall
 
-The firewall goes in first, so the printers are never on the hotspot without it.
+**Firewall first,** so the printers are never on the hotspot without it:
 
 ```bash
 cd ~/printer-relay
@@ -219,7 +174,19 @@ sudo systemctl enable --now printer-isolation.service
 sudo nft list table inet printer_isolation
 ```
 
-Now create the hotspot. Choose a long password; the printers will store it.
+**Allow more than 8 printers.** With its standard firmware, the Pi's Wi-Fi chip accepts only 8
+devices in hotspot mode. Raspberry Pi OS includes a "minimal" firmware that raises this by leaving out features a hotspot doesn't use:
+
+```bash
+sudo update-alternatives --set cyfmac43455-sdio.bin /usr/lib/firmware/cypress/cyfmac43455-sdio-minimal.bin
+sudo reboot
+```
+
+After reconnecting, `update-alternatives --display cyfmac43455-sdio.bin | head -3` should point
+to `…-minimal.bin`. The setting survives system updates. To undo it:
+`sudo update-alternatives --auto cyfmac43455-sdio.bin` and reboot.
+
+**Create the hotspot.** Choose a password and replace `6` with the channel from step 6:
 
 ```bash
 sudo nmcli con add type wifi ifname wlan0 con-name printer-ap autoconnect yes \
@@ -231,100 +198,45 @@ sudo nmcli con add type wifi ifname wlan0 con-name printer-ap autoconnect yes \
 sudo nmcli con up printer-ap
 ```
 
-Replace `6` with the channel you picked in step 6.
+**Check the isolation:** join `MakerspacePrinters` from a phone. It should get a `10.42.0.x`
+address and **no internet**. Forget the network afterwards.
 
-**Verify the isolation:** join `MakerspacePrinters` from your phone. You should get a `10.42.0.x`
-address and **no internet**. SSH to `10.42.0.1` from that network should also fail.
-Disconnect the phone afterwards.
-
-## 8. Move the printers onto the hotspot
+## 8. Join the printers to the hotspot
 
 On **each** printer's touchscreen:
 
-1. **Settings → WLAN**: join `MakerspacePrinters` with the hotspot password.
-2. Turn on **LAN Only Mode**. The printer has no internet here, so this stops it trying to
-   reach Bambu's cloud.
-3. Note the **Access Code** shown in the LAN settings. If it's different from the one in
-   Supabase, update it in the dashboard (Printers > Edit).
+1. **Settings → WLAN:** join `MakerspacePrinters` with the hotspot password.
+2. Turn on **LAN Only Mode**, so it stops trying to reach Bambu's cloud.
+3. Note its **Access Code** (shown in the LAN settings).
 
-**IP addresses are found automatically.** Each printer announces its IP on the hotspot every
-~10 seconds, and the relay connects to it and saves it to `printer_connections.host`. When a
-printer gets a new IP, the relay reconnects within about 10 seconds. A printer that isn't in
-Supabase yet shows up in the `discovered_printers` table, ready to add from the dashboard.
+Within about 10 seconds each printer appears on the dashboard's **Printers** page under printers
+found on the network. Add it there with a name and its access code. Printers already in the
+dashboard reconnect by themselves; if a printer's access code changed, update it with **Edit**.
 
-> If a printer's `last_error` says the access code was rejected even though it's right, the
-> printer's firmware may be restricting LAN access. Turn on **Developer Mode** (next to LAN Only
-> Mode in the printer's settings). The makerspace's A1s on firmware 01.08 haven't needed this.
-
-> **Hotspot capacity.** The Pi's built-in Wi-Fi may only handle around 8–10 devices at once in
-> hotspot mode. Four printers are fine. If some printers fail to join as more are added, use a USB
-> Wi-Fi adapter that supports more devices in hotspot mode (or a standalone offline router) for the
-> printer network. That's the contingency in the project proposal.
-
-### Optional: fixed IPs
-
-Not required, but it gives each printer a predictable IP, which helps when troubleshooting. Once the
-printers have joined, list them:
-
-```bash
-sudo cat /var/lib/NetworkManager/dnsmasq-wlan0.leases
-```
-
-Each line shows an expiry time, MAC address, IP and hostname. Create
-`/etc/NetworkManager/dnsmasq-shared.d/printers.conf` with one line per printer. Using the
-printer number as the last part of the IP makes them easy to find:
-
-```bash
-sudo mkdir -p /etc/NetworkManager/dnsmasq-shared.d
-sudo nano /etc/NetworkManager/dnsmasq-shared.d/printers.conf
-```
-
-The file looks like this, with your printers' MACs:
-
-```
-dhcp-host=ac:a7:04:f6:b7:9c,10.42.0.101,FredPrintstone
-dhcp-host=90:70:69:3b:8d:1c,10.42.0.102,FlintLockwood
-```
-
-Apply it:
-
-```bash
-sudo nmcli con down printer-ap && sudo nmcli con up printer-ap
-```
-
-The printers reconnect within a minute or so; power-cycle any that don't. The relay picks
-up the new IPs from their announcements on its own.
+To see which printers have joined: `sudo cat /var/lib/NetworkManager/dnsmasq-wlan0.leases`.
 
 ## 9. Test, then install the service
 
-Run it by hand first, as a dry run. It reads the printer list from Supabase and prints each
-printer's status, but doesn't write anything:
+A dry run reads the printer list from Supabase and prints each printer's status without writing
+anything:
 
 ```bash
 cd ~/printer-relay
 uv run python -m relay --dry-run
 ```
 
-Every printer should show a status line within ~15 seconds. Press Ctrl+C. Then run it for real:
-
-```bash
-uv run python -m relay
-```
-
-In the Supabase Table Editor, `printer_status` rows should update, `printer_connections.host`
-should show the `10.42.0.x` IPs, and a `relay_heartbeats` row should appear each minute. Press Ctrl+C.
-
-Install it as a service, so it starts on boot and restarts itself if it crashes:
+Every printer should show a status line within about 15 seconds. Press **Ctrl+C**. Then install
+the relay as a service, so it starts on boot and restarts itself if it ever crashes:
 
 ```bash
 sed "s/__USER__/$USER/g" deploy/printer-relay.service | sudo tee /etc/systemd/system/printer-relay.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now printer-relay.service
-systemctl status printer-relay
-journalctl -u printer-relay -f
+journalctl -u printer-relay -f # live log; Ctrl+C stops watching
 ```
 
-The last command follows the live logs; press Ctrl+C to stop watching.
+The dashboard should now show the printers live, and its Printers page should say the relay is
+running.
 
 ## 10. Reboot test
 
@@ -332,47 +244,47 @@ The last command follows the live logs; press Ctrl+C to stop watching.
 sudo reboot
 ```
 
-After the reboot, SSH back in over the campus network and check:
+After a minute, SSH back in and check:
 
 ```bash
-systemctl status printer-relay printer-isolation
+systemctl status printer-relay printer-isolation --no-pager
 nmcli con show --active
 ```
 
-Both services should be active, and `printer-ap` plus the campus connection should both be
-listed. The printers take **about 1–2 minutes** to rejoin the hotspot after the Pi restarts (they
-wait before retrying Wi-Fi), so they show offline briefly. Check
-`journalctl -u printer-relay -b --no-pager | tail` for them reconnecting.
+Both services should be **active (running)**, and both `printer-ap` and the Ethernet connection
+should be listed. The printers take **1–2 minutes** to rejoin the hotspot after a restart, so
+they show offline briefly.
 
-Optional but recommended: turn on automatic security updates with
+**Security updates** install automatically on Raspberry Pi OS. To confirm,
+`apt-config dump APT::Periodic::Unattended-Upgrade` should print `"1"`; if it doesn't, run
 `sudo apt install -y unattended-upgrades`.
 
 ---
 
 ## Day-to-day
 
-| Task | Command |
+| Task | How |
 |---|---|
 | Live logs | `journalctl -u printer-relay -f` |
 | Restart after editing `relay.toml` | `sudo systemctl restart printer-relay` |
-| Update the code (git) | `cd ~/printer-relay && git pull && uv sync && sudo systemctl restart printer-relay` |
+| Update the relay | `cd ~/printer-relay && git pull && uv sync && sudo systemctl restart printer-relay` |
 | Update the service file (after `deploy/printer-relay.service` changes) | `cd ~/printer-relay && sed "s/__USER__/$USER/g" deploy/printer-relay.service \| sudo tee /etc/systemd/system/printer-relay.service && sudo systemctl daemon-reload && sudo systemctl restart printer-relay` |
 | See which printers are on the hotspot | `sudo cat /var/lib/NetworkManager/dnsmasq-wlan0.leases` |
-| Add a printer | Join it to the hotspot (step 8). It appears on the dashboard's Printers page as found on the network; add it there with a name and its access code. The relay connects on its next printer sync (`printer_sync_interval_s`), no restart needed |
-| Remove a printer | Retire it in the dashboard (Printers > Edit > Retire). This keeps its history; Delete erases it |
+| Add a printer | Join it to the hotspot (step 8), then add it on the dashboard's Printers page. No restart needed |
+| Remove a printer | Dashboard → Printers → Edit → **Retire** (keeps its history). **Delete** also erases its history |
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| Printer shows `offline` | Check `printer_connections.last_error` in Supabase. It says whether the printer isn't on the network or its access code was rejected |
-| `last_error`: "Not seen on the network" | Printer is off or not joined to `MakerspacePrinters` |
-| `last_error`: "Access code rejected" | Fix the access code in the dashboard, or the printer needs Developer Mode (step 8) |
-| Log: `has no access code in printer_connections, skipping` | The printer was added without an access code. Add it in the dashboard |
+| A printer shows offline | The dashboard's Printers page shows why: not on the network, or access code rejected |
+| "Not seen on the network" | The printer is off or not joined to `MakerspacePrinters` |
+| "Access code rejected" | Fix the code on the dashboard (Edit), or turn on Developer Mode on the printer (step 8) |
+| Can't SSH to `makerspace-relay.local` | `.local` doesn't work on campus. Use the IP address, or Raspberry Pi Connect |
+| Can't SSH to the IP | The IP may have changed (ask IT for a DHCP reservation), or use Raspberry Pi Connect |
 | Log: `unknown model code` | A new printer model. Add its code to `MODEL_NAMES` in `relay/discovery.py` |
-| `Supabase … failed (401)` | Wrong key type. The relay needs the `sb_secret_` key, not `sb_publishable_` |
-| `Supabase … failed` with a connection error | Campus uplink is down. Try `ping supabase.com` and `nmcli device` |
-| Timestamps are wrong or TLS errors | Clock not synced. Check `timedatectl` (step 5) |
-| Printers can't see `MakerspacePrinters` | Hotspot must be 2.4 GHz (`band bg`). Try another channel |
-| All printers offline right after a Pi restart | Normal for 1–2 minutes while they rejoin the hotspot |
-| Pi won't join a phone hotspot during setup (step 1) | Imager mis-saves names with a curly apostrophe (e.g. "Alex’s iPhone"), and iPhones may hide the hotspot name. Use Ethernet instead |
+| `Supabase … failed (401)` | Wrong key in `relay.toml`. The relay needs the `sb_secret_` key, not `sb_publishable_` |
+| `Supabase … failed` with a connection error | The campus connection is down. Try `ping supabase.com` and `nmcli device` |
+| Wrong timestamps or TLS errors | The clock isn't synced. Check `timedatectl` (step 5) |
+| Printers can't see `MakerspacePrinters` | The hotspot must be 2.4 GHz (`band bg`). Try another channel (step 6) |
+| All printers offline right after a restart | Normal for 1–2 minutes while they rejoin |

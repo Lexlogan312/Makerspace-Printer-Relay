@@ -4,9 +4,9 @@ All tables live in Supabase's `public` schema. [`sql/schema.sql`](../sql/schema.
 and running it again brings an older database up to date.
 
 **Who can access what:**
-- **Public dashboard** (publishable key, no login): can read `printers` and `printer_status`.
-- **Admins** (signed in, listed in `admins`): can manage printers, and read everything else.
-- **Relay** (secret key on the Pi): can read and write everything. The secret key bypasses row-level security.
+- **Public dashboard**: can read `printers` and `printer_status`.
+- **Admins**: can manage printers, and read everything else.
+- **Relay**: can read and write everything. The secret key bypasses row-level security.
 
 ## Tables
 
@@ -24,14 +24,13 @@ and running it again brings an older database up to date.
 
 ### Old history is deleted after 92 days
 
-The dashboard shows at most 90 days, so a nightly job (Supabase's pg_cron, set up by
-`sql/schema.sql`) deletes `relay_heartbeats`, `printer_events` and finished `print_jobs` rows older
-than 92 days, at about 4 AM. Nothing else is deleted. To keep more, change `keep_days` in
+The dashboard shows at most 90 days, so a nightly job deletes `relay_heartbeats`, `printer_events` and finished `print_jobs` rows older
+than 92 days. Nothing else is deleted. To keep more, change `keep_days` in
 `delete_old_history()` (and the dashboard's longest range, in `AnalyticsPage.tsx`, to match).
 
 ### Adding a printer
 
-1. On the printer's touchscreen, join it to the `MakerspacePrinters` hotspot and note its
+1. On the printer's touchscreen, join it to the hotspot and note its
    **access code** (LAN settings).
 2. Within ~10 s it appears on the dashboard's Printers page under printers found on the network.
 3. Add it there (Printers > Add printer), with a name and the access code. That calls the
@@ -63,7 +62,7 @@ from added join new_printers using (serial);
 
 Retire it from the dashboard (Edit > Retire), which sets `maintenance_status = 'offline_permanent'`.
 The relay disconnects and closes any open print job, and the history is kept. Deleting the row instead removes its status and events.
-Its print jobs are kept (with `printer_id` set to null) so fleet totals stay correct.
+Its print jobs are kept so fleet totals stay correct.
 
 ### `last_error` messages
 
@@ -71,7 +70,7 @@ Its print jobs are kept (with `printer_id` set to null) so fleet totals stay cor
 |---|---|
 | *(empty)* | Connected |
 | Not seen on the network… | No announcement from this printer in the last minute: it's off or not on the hotspot |
-| Access code rejected… | Wrong `access_code`, or the printer needs Developer Mode |
+| Access code rejected… | Wrong `access_code` |
 | Can't reach the printer at … | It announced itself but MQTT didn't answer, usually right after it boots |
 | No IP address yet… | No announcement yet and no saved `host` |
 
@@ -91,9 +90,6 @@ Bambu's LAN reports have no job id or start time, so jobs come from `gcode_state
   - If a print ends while the relay is down, the end time is the printer's last report before
     the relay stopped.
 - **Restarts:** after a relay restart, an unfinished job continues in the same row.
-
-`FINISH` doesn't end when someone takes the print off the plate (the A1 can't tell), so
-there's no "time until pickup" stat.
 
 ## Analytics views (admin-only)
 
@@ -116,5 +112,4 @@ For a longer period, add up the daily rows, for example
 `sum(printing_hours) / (24 × days)` for a printer's utilization.
 
 **Latency** is measured from the first printer report after the previous push to Supabase
-confirming the write. It's slightly pessimistic, and it doesn't include the dashboard's own
-Realtime delay.
+confirming the write, and it doesn't include the dashboard's own Realtime delay.
