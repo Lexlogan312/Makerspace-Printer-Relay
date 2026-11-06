@@ -404,6 +404,29 @@ begin
   end loop;
 end $$;
 
+-- ───────────────────────────── Deleting old history ─────────────────────────────
+-- The dashboard shows at most 90 days, so every night at about 4 AM, history older than 92 days is
+-- deleted (two spare days keep the oldest day of the 90-day charts complete). Only the three
+-- tables that grow forever; a print that's still running is never deleted. Printers, their
+-- status, access codes and staff accounts are never touched.
+-- To run it by hand: select public.delete_old_history();
+-- To see when it last ran: select * from cron.job_run_details order by start_time desc limit 5;
+create or replace function public.delete_old_history(keep_days integer default 92)
+returns void
+language sql set search_path = ''
+as $$
+  delete from public.relay_heartbeats where ts < now() - make_interval(days => keep_days);
+  delete from public.printer_events where ts < now() - make_interval(days => keep_days);
+  delete from public.print_jobs where ended_at < now() - make_interval(days => keep_days);
+$$;
+-- Only the scheduler (and you, in the SQL Editor) may run it, never the website.
+revoke all on function public.delete_old_history(integer) from public, anon, authenticated;
+
+create extension if not exists pg_cron;
+-- Times are UTC: 8:30 UTC is 3:30 or 4:30 AM in Ohio. Scheduling under the same name again
+-- replaces the old schedule, so re-running this file doesn't add a second job.
+select cron.schedule('delete-old-history', '30 8 * * *', 'select public.delete_old_history()');
+
 -- ───────────────────────────── Upgrading an older database ─────────────────────────────
 -- Nothing below changes a new database. On one set up with the older numbered SQL files, it adds
 -- what those files added later and removes what they removed. If the relay is running, stop it

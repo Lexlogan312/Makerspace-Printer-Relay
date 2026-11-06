@@ -22,6 +22,13 @@ and running it again brings an older database up to date.
 | `admins` | you, in the SQL editor | nobody (`is_admin()` checks it) | Which signed-in users are admins |
 | Storage bucket `printer-snapshots` | relay | everyone (public bucket, no listing) | `<printer id>.jpg`: the latest camera photo of each printing printer, replaced each minute while someone has the board's Photos switch on, otherwise every 10 minutes. The dashboard adds `?v=<snapshot_at>` so a new photo never shows a cached old one |
 
+### Old history is deleted after 92 days
+
+The dashboard shows at most 90 days, so a nightly job (Supabase's pg_cron, set up by
+`sql/schema.sql`) deletes `relay_heartbeats`, `printer_events` and finished `print_jobs` rows older
+than 92 days, at about 4 AM. Nothing else is deleted. To keep more, change `keep_days` in
+`delete_old_history()` (and the dashboard's longest range, in `AnalyticsPage.tsx`, to match).
+
 ### Adding a printer
 
 1. On the printer's touchscreen, join it to the `MakerspacePrinters` hotspot and note its
