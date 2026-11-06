@@ -72,3 +72,10 @@ def test_specialty_colors_need_an_exact_match():
     assert color_name("#7E7E7F") == "Gray"       # not Space Gray
     assert color_name("#895838") == "Brown"      # not Copper Filled
     assert color_name(None) is None and color_name("nope") is None
+
+
+def test_a_garbled_color_is_treated_as_unknown():
+    # Found by the property tests: anything that isn't a hex color used to be saved as one.
+    state = {"print": {"gcode_state": "IDLE", "vt_tray": {"tray_type": "PLA", "tray_color": "00000:FF"}}}
+    r = build_status(PRINTER, state, connected=True, last_message_at=None, now=NOW)
+    assert (r["filament_color"], r["filament_color_name"]) == (None, None)

@@ -53,7 +53,10 @@ def _hex_color(tray_color) -> str | None:
         return None
     if len(tray_color) == 8 and tray_color[6:].upper() == "00":
         return None
-    return "#" + tray_color[:6].upper()
+    rgb = tray_color[:6].upper()
+    if any(c not in "0123456789ABCDEF" for c in rgb):
+        return None  # garbled, not a color
+    return "#" + rgb
 
 
 def _iso(ts: datetime | None) -> str | None:

@@ -101,7 +101,7 @@ relay/
   camera.py       camera photos and the camera test command
   presence.py     who is viewing which printer
   light.py        printer light test command
-tests/            pytest suite
+tests/            pytest suite, including property-based tests (Hypothesis)
 sql/schema.sql    complete database setup
 deploy/           systemd units and firewall rules for the Pi
 docs/             Pi setup guide and database reference
