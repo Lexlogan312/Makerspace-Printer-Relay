@@ -2,6 +2,7 @@ from relay.printer import deep_merge
 from relay.status import FILAMENT_COLORS, build_status, color_name, fingerprint
 from tests.fixtures import NOW, PRINTER, PRINTING
 
+
 def test_printing_record():
     r = build_status(PRINTER, PRINTING, connected=True, last_message_at=NOW.timestamp(), now=NOW)
     assert r["printer_id"] == PRINTER.id

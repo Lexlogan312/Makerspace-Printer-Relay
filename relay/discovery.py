@@ -49,10 +49,7 @@ class Announcement:
 
 def parse_announcement(data: bytes, sender_ip: str, seen_at: float) -> Announcement | None:
     """Parse one packet. Returns None for anything that isn't a valid Bambu printer announcement."""
-    try:
-        lines = data.decode("utf-8", errors="replace").splitlines()
-    except Exception:
-        return None
+    lines = data.decode("utf-8", errors="replace").splitlines()
     if not lines or not lines[0].startswith("NOTIFY"):
         return None
 
@@ -134,7 +131,7 @@ class Discovery:
         while not self._stop.is_set():
             try:
                 data, (sender_ip, _) = self._sock.recvfrom(4096)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 if not self._stop.is_set():

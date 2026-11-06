@@ -46,7 +46,7 @@ class RelayConfig:
     printer_sync_interval_s: float = 30.0   # re-read the printer list from Supabase this often
     request_full_status: bool = True        # ask printers for a full report ("pushall")
     full_status_interval_s: float = 300.0
-    camera_enabled: bool = True             # camera snapshots of printing printers
+    camera_enabled: bool = True             # still photos from the printers' cameras
     camera_interval_s: float = 60.0         # one photo per printing printer this often
     camera_idle_interval_s: float = 600.0   # ...per open printer this often (is the plate clear?)
     camera_watch_interval_s: float = 4.0    # ...while someone has the printer's details open

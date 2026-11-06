@@ -1,11 +1,9 @@
 """Printer lights ([camera] light = "auto"): on while printing or watched, never fighting a person."""
 
-import dataclasses
-
-from relay.app import LIGHT_END_HOLD_S, LIGHT_RETRY_S, Relay
-from relay.config import RelayConfig
-from tests.fixtures import PRINTER, state
-from tests.test_app import Clock, FakeConnection, FakeDB, FakeDiscovery
+from relay import app
+from relay.app import LIGHT_END_HOLD_S, LIGHT_RETRY_S
+from relay.printer import ledctrl, light_mode
+from tests.fixtures import PRINTER, FakeConnection, make_relay, state
 
 
 class LightConnection(FakeConnection):
@@ -26,14 +24,11 @@ class Watching:
     def __init__(self): self.watching = set()
 
 
-def make(tmp_path, light="auto", printer=PRINTER):
-    FakeConnection.created = []
-    db, disc, clock = FakeDB([printer]), FakeDiscovery(), Clock()
-    config = RelayConfig(supabase_url="x", supabase_key="x", camera_light=light)
-    relay = Relay(config, db, disc, connection_factory=LightConnection, clock=lambda: clock.mono,
-                  wall_clock=lambda: clock.wall, light_state_path=tmp_path / "lights.json")
+def make(tmp_path, light="auto"):
+    relay, _db, disc, clock = make_relay(connection_factory=LightConnection, light_state_path=tmp_path / "lights.json",
+                                         camera_light=light)
     relay.camera = Watching()
-    disc.announce(printer.serial, "10.42.0.23")
+    disc.announce(PRINTER.serial, "10.42.0.23")
     relay.tick()
     conn = FakeConnection.created[0]
 
@@ -46,8 +41,16 @@ def make(tmp_path, light="auto", printer=PRINTER):
     return relay, conn, clock, report
 
 
+def test_light_command_and_report_parsing():
+    assert ledctrl("on")["system"] == {"sequence_id": "0", "command": "ledctrl", "led_node": "chamber_light",
+                                       "led_mode": "on", "led_on_time": 500, "led_off_time": 500,
+                                       "loop_times": 0, "interval_time": 0}
+    assert light_mode({"print": {"lights_report": [{"node": "chamber_light", "mode": "off"}]}}) == "off"
+    assert light_mode({"print": {"gcode_state": "IDLE"}}) is None
+
+
 def test_on_while_printing_kept_on_for_the_end_photo_then_off(tmp_path):
-    relay, conn, clock, report = make(tmp_path)
+    _relay, conn, clock, report = make(tmp_path)
     report("IDLE")
     assert conn.commands == []
     report("RUNNING")
@@ -65,7 +68,7 @@ def test_on_while_printing_kept_on_for_the_end_photo_then_off(tmp_path):
 
 
 def test_on_while_someone_watches(tmp_path):
-    relay, conn, clock, report = make(tmp_path)
+    relay, conn, _clock, report = make(tmp_path)
     report("IDLE")
     relay.camera.watching = {PRINTER.id}
     report("IDLE")
@@ -77,7 +80,7 @@ def test_on_while_someone_watches(tmp_path):
 
 
 def test_a_light_someone_else_turned_on_is_left_on(tmp_path):
-    relay, conn, clock, report = make(tmp_path)
+    _relay, conn, _clock, report = make(tmp_path)
     conn.light = "on"                              # switched on at the printer
     report("RUNNING")
     report("FINISH", advance=LIGHT_END_HOLD_S + 1)
@@ -86,7 +89,7 @@ def test_a_light_someone_else_turned_on_is_left_on(tmp_path):
 
 
 def test_someone_switching_our_light_off_is_respected_until_the_next_print(tmp_path):
-    relay, conn, clock, report = make(tmp_path)
+    _relay, conn, clock, report = make(tmp_path)
     report("RUNNING")
     assert conn.commands == ["on"]
     conn.light = "off"                             # someone turned it off at the printer
@@ -101,7 +104,7 @@ def test_someone_switching_our_light_off_is_respected_until_the_next_print(tmp_p
 
 
 def test_a_printer_that_ignores_the_command_is_not_spammed(tmp_path):
-    relay, conn, clock, report = make(tmp_path)
+    _relay, conn, _clock, report = make(tmp_path)
     conn.obey = False
     for _ in range(10):
         report("RUNNING", advance=LIGHT_RETRY_S)
@@ -109,14 +112,14 @@ def test_a_printer_that_ignores_the_command_is_not_spammed(tmp_path):
 
 
 def test_never_means_never(tmp_path):
-    relay, conn, clock, report = make(tmp_path, light="never")
+    _relay, conn, _clock, report = make(tmp_path, light="never")
     report("RUNNING")
     assert conn.commands == []
 
 
 def test_lights_turned_on_before_a_restart_are_still_turned_off(tmp_path):
     (tmp_path / "lights.json").write_text(f'["{PRINTER.id}"]')
-    relay, conn, clock, report = make(tmp_path)
+    _relay, conn, _clock, report = make(tmp_path)
     conn.light = "on"
     report("IDLE")
     assert conn.commands == ["off"]
@@ -124,7 +127,7 @@ def test_lights_turned_on_before_a_restart_are_still_turned_off(tmp_path):
 
 def test_switching_to_never_turns_off_the_lights_the_relay_left_on(tmp_path):
     (tmp_path / "lights.json").write_text(f'["{PRINTER.id}"]')   # from the last run, with "auto"
-    relay, conn, clock, report = make(tmp_path, light="never")
+    _relay, conn, _clock, report = make(tmp_path, light="never")
     conn.light = "on"
     report("RUNNING")
     assert conn.commands == ["off"]                # switched off even though it's printing
@@ -136,9 +139,8 @@ def test_switching_to_never_turns_off_the_lights_the_relay_left_on(tmp_path):
 
 
 def test_shutdown_switches_off_the_relays_lights(tmp_path, monkeypatch):
-    import relay.app as app
     monkeypatch.setattr(app.time, "sleep", lambda s: None)
-    relay, conn, clock, report = make(tmp_path)
+    relay, conn, _clock, report = make(tmp_path)
     report("RUNNING")
     relay._lights_off_for_shutdown()
     assert conn.commands == ["on", "off"]

@@ -1,6 +1,7 @@
 [project]
 name = "makerspace-printer-relay"
 version = "0.1.0"
+description = "Relays Bambu Lab printer status, print history and camera photos to Supabase for the makerspace dashboard."
 requires-python = ">=3.13"
 dependencies = [
     "paho-mqtt>=2.1.0",

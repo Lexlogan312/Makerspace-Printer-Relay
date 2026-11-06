@@ -15,6 +15,9 @@ changes a print.
 
 Each step runs separately (see _step), so one failing step, such as Supabase being
 unreachable, doesn't stop the others. Anything that failed is retried on a later pass.
+
+Camera photos (camera.py) and who is watching on the dashboard (presence.py) run on their own
+threads, started by `run`.
 """
 
 import json
@@ -22,31 +25,27 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .camera import CameraTarget, SnapshotWorker
-from .presence import PresenceWatcher
 from .config import Printer, RelayConfig
 from .database import Database, DatabaseError
 from .discovery import Discovery
 from .history import PrinterHistory
+from .presence import PresenceWatcher
 from .printer import PrinterConnection, Snapshot, light_mode
-from .status import build_status, fingerprint
+from .status import ACTIVE_STATES, build_status, fingerprint
 
 log = logging.getLogger("relay")
 
 STARTUP_GRACE_S = 15          # time for connections and first announcements before reporting printers offline
+STUCK_RECONNECT_S = 120.0     # a printer on the network but still not connected after this long gets a fresh connection
 MAX_PENDING_EVENTS = 10_000   # cap on queued events if Supabase is down for a long time
+HISTORY_BATCH = 500           # printer_events rows per request
 DISCOVERED_REFRESH_S = 300    # how often to refresh last_seen for an unregistered printer
-HISTORY_BATCH = 500
-PRINTING_STATES = {"RUNNING", "PREPARE", "SLICING", "PAUSE"}  # photographed often, light on
-LIGHT_RETRY_S = 10       # wait this long for a light change to show up before deciding it didn't take
-LIGHT_END_HOLD_S = 30    # keep the light on this long after a print ends, for the photo of the result
-
-
-# A printer that's on the network but still not connected after this long gets a fresh connection.
-STUCK_RECONNECT_S = 120.0
+LIGHT_RETRY_S = 10            # wait this long for a light change to show up before deciding it didn't take
+LIGHT_END_HOLD_S = 30         # keep the light on this long after a print ends, for the photo of the result
 
 
 def connection_problem(snap: Snapshot, has_host: bool, seen_on_network: bool | None) -> str | None:
@@ -66,7 +65,7 @@ def connection_problem(snap: Snapshot, has_host: bool, seen_on_network: bool | N
 class Relay:
     def __init__(self, config: RelayConfig, db: Database, discovery: Discovery, dump_dir: Path | None = None,
                  connection_factory=PrinterConnection, clock=time.monotonic,
-                 wall_clock=lambda: datetime.now(timezone.utc),
+                 wall_clock=lambda: datetime.now(UTC),
                  light_state_path: Path | None = None):
         self.config = config
         self.db = db
@@ -87,12 +86,18 @@ class Relay:
         self.latencies: list[float] = []                     # seconds from report to Supabase, since the last heartbeat
         self.problems: dict[str, str | None] = {}            # printer id -> current connection problem
         self.gcode_states: dict[str, str | None] = {}        # printer id -> latest gcode_state (read by the camera thread)
-        # Printer lights ([camera] light = "auto")
+        self.pending_events: list[dict] = []
+        self.pending_jobs: dict[str, dict] = {}              # job id -> latest row
+        self.discovered_sent: dict[str, tuple[tuple, float]] = {}  # serial -> (what was sent, when)
+        self._discovered_cleaned_for: set[str] | None = None
+
+        # Camera photos: when each printer's latest photo was taken (set from the camera threads),
+        # and the value last sent in printer_status.snapshot_at.
         self.camera: SnapshotWorker | None = None
-        # When each printer's latest camera photo was taken (set from the camera threads), and the
-        # value last sent in printer_status.snapshot_at.
         self.snapshot_at: dict[str, str] = {}
         self.snapshot_sent: dict[str, str | None] = {}
+
+        # Printer lights ([camera] light = "auto")
         self.light_modes: dict[str, str | None] = {}         # printer id -> "on"/"off" as last reported
         # Under systemd this is /var/lib/printer-relay (StateDirectory); run by hand, the current folder.
         self.light_state_path = light_state_path or Path(os.environ.get("STATE_DIRECTORY", ".")) / "light-state.json"
@@ -101,10 +106,7 @@ class Relay:
         self.light_declined: set[str] = set()                # turned off by someone else: leave it until next time
         self.light_hold_until: dict[str, float] = {}
         self.was_printing: dict[str, bool] = {}
-        self.pending_events: list[dict] = []
-        self.pending_jobs: dict[str, dict] = {}              # job id -> latest row
-        self.discovered_sent: dict[str, tuple[tuple, float]] = {}
-        self._discovered_cleaned_for: set[str] | None = None
+
         # Values written since the last printer sync, so a column isn't rewritten every pass
         # while self.printers still holds the value from before the write.
         self.written: dict[tuple[str, str], object] = {}
@@ -166,9 +168,8 @@ class Relay:
         minute = wall.replace(second=0, microsecond=0)
         # Send in the second half of each minute, so the row's server timestamp (which decides the
         # minute it counts for) still lands in the same minute even if the clocks differ a little.
-        if wall.second >= 30 and minute != self.last_heartbeat_minute:
-            if self._step("heartbeat", self._heartbeat):
-                self.last_heartbeat_minute = minute
+        if wall.second >= 30 and minute != self.last_heartbeat_minute and self._step("heartbeat", self._heartbeat):
+            self.last_heartbeat_minute = minute
 
         if self.config.request_full_status and now - self.last_full_request >= self.config.full_status_interval_s:
             for conn in self.conns.values():
@@ -317,7 +318,7 @@ class Relay:
         if self.registered_serials is None:
             return  # until the first sync, every printer would look unregistered
         now = self.clock()
-        rows, new = [], []
+        rows, infos, new = [], {}, []
         for ann in self.discovery.recent():
             if ann.serial in self.registered_serials:
                 continue
@@ -326,14 +327,14 @@ class Relay:
             if sent and sent[0] == info and now - sent[1] < DISCOVERED_REFRESH_S:
                 continue
             rows.append({"serial": ann.serial, "ip": ann.ip, "model": info[1], "dev_name": ann.dev_name,
-                         "firmware_version": ann.firmware, "last_seen": self._iso_now()})
+                         "firmware_version": ann.firmware, "last_seen": self.wall_clock().isoformat(timespec="seconds")})
+            infos[ann.serial] = info
             if not sent:
                 new.append(ann)
         if rows:
             self.db.upsert_discovered(rows)
-            for row in rows:
-                self.discovered_sent[row["serial"]] = ((row["ip"], row["model"], row["dev_name"],
-                                                        row["firmware_version"]), now)
+            for serial, info in infos.items():
+                self.discovered_sent[serial] = (info, now)
             for ann in new:
                 log.info("unregistered printer on the network: %s (%s) at %s", ann.serial, ann.dev_name, ann.ip)
 
@@ -432,111 +433,6 @@ class Relay:
             del self.pending_events[:dropped]
             self._warn_once("events-dropped", "event queue full, dropping the oldest events")
 
-    # camera (called from the camera thread)
-
-    def camera_targets(self) -> list[CameraTarget]:
-        """Connected, in-service printers that have reported a state, with where to reach their camera.
-        Printing ones are photographed often; open ones now and then (is the plate clear?)."""
-        targets = []
-        for pid, p in list(self.printers.items()):
-            conn = self.conns.get(pid)
-            state = self.gcode_states.get(pid)
-            if conn and state and p.in_use:
-                targets.append(CameraTarget(pid, p.label, conn.host, p.access_code, printing=state in PRINTING_STATES))
-        return targets
-
-    # 8. lights
-
-    def _control_lights(self) -> None:
-        """Light on while a printer prints (and briefly after, for the photo of the result) or while
-        someone watches it. Only lights the relay turned on are turned off again, and a light
-        someone else switches is left alone."""
-        now = self.clock()
-        watching = self.camera.watching if self.camera else set()
-        changed = False
-        for pid, p in self.printers.items():
-            conn = self.conns.get(pid)
-            state, mode = self.gcode_states.get(pid), self.light_modes.get(pid)
-            if not conn or not conn.is_connected or state is None or mode is None:
-                continue  # wait for a report that says what the light is doing
-            printing = state in PRINTING_STATES
-            if self.was_printing.get(pid) and not printing:
-                self.light_hold_until[pid] = now + LIGHT_END_HOLD_S
-            self.was_printing[pid] = printing
-            want = p.in_use and (
-                printing or pid in watching or now < self.light_hold_until.get(pid, 0.0))
-            sent = self.light_sent.get(pid)
-            waiting = sent is not None and now - sent[1] < LIGHT_RETRY_S
-            ours = pid in self.lights_ours
-
-            if want:
-                if mode == "on" or waiting or pid in self.light_declined:
-                    continue
-                if ours:  # we turned it on, and it's off again: someone switched it off, or it didn't take
-                    self.lights_ours.discard(pid)
-                    self.light_declined.add(pid)
-                    changed = True
-                    log.info("[%s] light is off again; leaving it off until the next print or view", p.label)
-                    continue
-                if conn.set_light("on"):
-                    self.light_sent[pid] = ("on", now)
-                    self.lights_ours.add(pid)
-                    changed = True
-            else:
-                self.light_declined.discard(pid)
-                if not ours or waiting:
-                    continue
-                if mode == "off":
-                    self.lights_ours.discard(pid)
-                    changed = True
-                elif conn.set_light("off"):
-                    self.light_sent[pid] = ("off", now)
-        if changed:
-            self._save_lights_ours()
-
-    def _release_lights(self) -> None:
-        """Switch off lights the relay turned on, and forget them once the printer reports them off."""
-        now, changed = self.clock(), False
-        for pid in list(self.lights_ours):
-            conn, mode = self.conns.get(pid), self.light_modes.get(pid)
-            if pid not in self.printers:          # retired or deleted: nothing left to switch off
-                self.lights_ours.discard(pid)
-                changed = True
-            elif mode == "off":
-                self.lights_ours.discard(pid)
-                changed = True
-            elif mode == "on" and conn and conn.is_connected:
-                sent = self.light_sent.get(pid)
-                if sent is None or now - sent[1] >= LIGHT_RETRY_S:
-                    if conn.set_light("off"):
-                        self.light_sent[pid] = ("off", now)
-        if changed:
-            self._save_lights_ours()
-
-    def _lights_off_for_shutdown(self) -> None:
-        sent = False
-        for pid in list(self.lights_ours):
-            conn = self.conns.get(pid)
-            if conn and conn.set_light("off"):
-                self.lights_ours.discard(pid)
-                sent = True
-        if sent:
-            time.sleep(1.0)  # let the commands go out before the connections close
-        self._save_lights_ours()
-
-    def _load_lights_ours(self) -> set[str]:
-        try:
-            return set(json.loads(self.light_state_path.read_text())) if self.light_state_path else set()
-        except (OSError, ValueError):
-            return set()
-
-    def _save_lights_ours(self) -> None:
-        if self.light_state_path:
-            try:
-                self.light_state_path.write_text(json.dumps(sorted(self.lights_ours)))
-            except OSError as e:
-                self._warn_once("light-state", "can't save %s: %s", self.light_state_path, e)
-
     # 5. connection problems
 
     def _write_problems(self) -> None:
@@ -577,6 +473,105 @@ class Relay:
         })
         self.latencies.clear()
 
+    # 8. lights
+
+    def _control_lights(self) -> None:
+        """Light on while a printer prints (and briefly after, for the photo of the result) or while
+        someone watches it. Only lights the relay turned on are turned off again, and a light
+        someone else switches is left alone."""
+        now = self.clock()
+        watching = self.camera.watching if self.camera else set()
+        changed = False
+        for pid, p in self.printers.items():
+            conn = self.conns.get(pid)
+            state, mode = self.gcode_states.get(pid), self.light_modes.get(pid)
+            if not conn or not conn.is_connected or state is None or mode is None:
+                continue  # wait for a report that says what the light is doing
+            printing = state in ACTIVE_STATES
+            if self.was_printing.get(pid) and not printing:
+                self.light_hold_until[pid] = now + LIGHT_END_HOLD_S
+            self.was_printing[pid] = printing
+            want = p.in_use and (printing or pid in watching or now < self.light_hold_until.get(pid, 0.0))
+            sent = self.light_sent.get(pid)
+            waiting = sent is not None and now - sent[1] < LIGHT_RETRY_S
+            ours = pid in self.lights_ours
+
+            if want:
+                if mode == "on" or waiting or pid in self.light_declined:
+                    continue
+                if ours:  # we turned it on, and it's off again: someone switched it off, or it didn't take
+                    self.lights_ours.discard(pid)
+                    self.light_declined.add(pid)
+                    changed = True
+                    log.info("[%s] light is off again; leaving it off until the next print or view", p.label)
+                    continue
+                if conn.set_light("on"):
+                    self.light_sent[pid] = ("on", now)
+                    self.lights_ours.add(pid)
+                    changed = True
+            else:
+                self.light_declined.discard(pid)
+                if not ours or waiting:
+                    continue
+                if mode == "off":
+                    self.lights_ours.discard(pid)
+                    changed = True
+                elif conn.set_light("off"):
+                    self.light_sent[pid] = ("off", now)
+        if changed:
+            self._save_lights_ours()
+
+    def _release_lights(self) -> None:
+        """Switch off lights the relay turned on, and forget them once the printer reports them off."""
+        now, changed = self.clock(), False
+        for pid in list(self.lights_ours):
+            conn, mode = self.conns.get(pid), self.light_modes.get(pid)
+            if pid not in self.printers or mode == "off":  # retired or deleted, or already off
+                self.lights_ours.discard(pid)
+                changed = True
+            elif mode == "on" and conn and conn.is_connected:
+                sent = self.light_sent.get(pid)
+                if (sent is None or now - sent[1] >= LIGHT_RETRY_S) and conn.set_light("off"):
+                    self.light_sent[pid] = ("off", now)
+        if changed:
+            self._save_lights_ours()
+
+    def _lights_off_for_shutdown(self) -> None:
+        sent = False
+        for pid in list(self.lights_ours):
+            conn = self.conns.get(pid)
+            if conn and conn.set_light("off"):
+                self.lights_ours.discard(pid)
+                sent = True
+        if sent:
+            time.sleep(1.0)  # let the commands go out before the connections close
+        self._save_lights_ours()
+
+    def _load_lights_ours(self) -> set[str]:
+        try:
+            return set(json.loads(self.light_state_path.read_text()))
+        except (OSError, ValueError):
+            return set()
+
+    def _save_lights_ours(self) -> None:
+        try:
+            self.light_state_path.write_text(json.dumps(sorted(self.lights_ours)))
+        except OSError as e:
+            self._warn_once("light-state", "can't save %s: %s", self.light_state_path, e)
+
+    # camera (called from the camera thread)
+
+    def camera_targets(self) -> list[CameraTarget]:
+        """Connected, in-service printers that have reported a state, with where to reach their camera.
+        Printing ones are photographed often; open ones now and then (is the plate clear?)."""
+        targets = []
+        for pid, p in list(self.printers.items()):
+            conn = self.conns.get(pid)
+            state = self.gcode_states.get(pid)
+            if conn and state and p.in_use:
+                targets.append(CameraTarget(pid, p.label, conn.host, p.access_code, printing=state in ACTIVE_STATES))
+        return targets
+
     # helpers
 
     def _update_if_changed(self, pid: str, column: str, db_value, new_value, write) -> None:
@@ -590,6 +585,3 @@ class Relay:
         if key not in self._warned:
             self._warned.add(key)
             log.warning(message, *args)
-
-    def _iso_now(self) -> str:
-        return self.wall_clock().isoformat(timespec="seconds")

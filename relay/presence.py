@@ -86,7 +86,7 @@ class PresenceWatcher:
             try:
                 self.session(stop)
                 backoff = 1.0  # it was up and closed cleanly: reconnect promptly
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - whatever went wrong, reconnect
                 if self.connected:
                     backoff = 1.0  # it had been working: the first retry is quick
                 self._failures += 1

@@ -28,8 +28,10 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+
+from .database import load_printers_from_config
 
 log = logging.getLogger("relay.camera")
 
@@ -39,6 +41,7 @@ HEADER_SIZE = 16
 MAX_FRAME_BYTES = 4 * 1024 * 1024  # a 1080p JPEG is well under this; anything bigger is garbage
 JPEG_START = b"\xff\xd8"
 JPEG_END = b"\xff\xd9"
+SETTLE_S = 0.0  # seconds to let the camera adjust before keeping a frame (0: the first frame is fine)
 
 
 class CameraError(RuntimeError):
@@ -78,8 +81,6 @@ def read_frame(sock, attempts: int = 3) -> bytes:
     raise CameraError("The printer's camera frames weren't valid JPEG images.")
 
 
-SETTLE_S = 0.0  # seconds to let the camera adjust before keeping a frame (0: the first frame is fine)
-
 
 def read_settled_frame(sock, settle_s: float, clock=time.monotonic) -> bytes:
     """Read frames for `settle_s` seconds (at least one), returning the newest."""
@@ -100,7 +101,7 @@ def grab_frame(host: str, access_code: str, timeout: float = 15.0, settle_s: flo
     ctx.verify_mode = ssl.CERT_NONE  # the printer's certificate is self-signed
     try:
         raw = socket.create_connection((host, CAMERA_PORT), timeout=timeout)
-    except socket.timeout:
+    except TimeoutError:
         raise CameraError(f"No answer from {host}:{CAMERA_PORT}. Is the printer on and on this network?") from None
     except ConnectionRefusedError:
         raise CameraError(f"{host} refused the camera connection. The camera may be off in the printer's "
@@ -113,7 +114,7 @@ def grab_frame(host: str, access_code: str, timeout: float = 15.0, settle_s: flo
             sock.settimeout(timeout)
             sock.sendall(login_packet(access_code))
             return read_settled_frame(sock, settle_s)
-    except socket.timeout:
+    except TimeoutError:
         raise CameraError("The camera connected but sent no picture in time. Check the access code, and that "
                           "the printer's camera video setting is on.") from None
     except ssl.SSLError as e:
@@ -126,6 +127,7 @@ def grab_frame(host: str, access_code: str, timeout: float = 15.0, settle_s: flo
 
 @dataclass(frozen=True)
 class CameraTarget:
+    """A printer to photograph, and where to reach its camera (see Relay.camera_targets)."""
     printer_id: str
     label: str
     host: str
@@ -152,7 +154,7 @@ class SnapshotWorker:
                  on_photo: Callable[[str, str], None] | None = None,
                  photos_wanted: Callable[[], bool] | None = None,
                  grab: Callable[[str, str], bytes] = grab_frame,
-                 wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
                  clock: Callable[[], float] = time.monotonic):
         self.db = db
         self.targets = targets          # printers worth photographing right now (from the relay)
@@ -176,7 +178,7 @@ class SnapshotWorker:
 
     @property
     def watching(self) -> set[str]:
-        """Printers someone has open right now (as of the last check, every 2 s)."""
+        """Printers someone has open right now (as of the last check, about every half second)."""
         return set(self._watching)
 
     def start(self, stop: threading.Event) -> None:
@@ -219,7 +221,7 @@ class SnapshotWorker:
         self._watch_checked = now
         try:
             ids = self.watched()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - keep the last known set and carry on
             self._log_once("watch", "%s", str(e))
             return self._watching
         self._errors.pop("watch", None)
@@ -234,7 +236,7 @@ class SnapshotWorker:
                 self._in_flight.discard(t.printer_id)
 
     def capture_all(self) -> int:
-        """Photograph every target once, now (used by tests and for a manual pass)."""
+        """Photograph every target once, now. Returns how many worked."""
         return sum(self.capture(t) for t in self.targets())
 
     def capture(self, t: CameraTarget) -> bool:
@@ -243,9 +245,9 @@ class SnapshotWorker:
             taken_at = self.wall_clock().isoformat(timespec="seconds")
             self.db.upload_snapshot(t.printer_id, jpeg, taken_at)
             self.on_photo(t.printer_id, taken_at)
-        except Exception as e:  # a camera or upload problem must never stop the other printers
+        except Exception as e:  # noqa: BLE001 - a camera or upload problem must never stop the other printers
             message = str(e)
-            if "sql/07" in message:  # a setup problem, the same for every printer: say it once
+            if "schema.sql" in message:  # a setup problem, the same for every printer: say it once
                 self._log_once("setup", "%s", message)
             else:
                 self._log_once(t.printer_id, "[%s] camera snapshot failed: %s", t.label, message)
@@ -265,15 +267,7 @@ class SnapshotWorker:
 
 def _lookup(config_path: str, name: str) -> tuple[str, str, str]:
     """(label, host, access code) for a printer by name, from Supabase via relay.toml."""
-    from .config import load_config
-    from .database import Database
-
-    config = load_config(config_path)
-    db = Database(config.supabase_url, config.supabase_key)
-    try:
-        printers = db.load_printers()
-    finally:
-        db.close()
+    printers = load_printers_from_config(config_path)
     matches = [p for p in printers if p.label.casefold() == name.casefold()]
     if not matches:
         known = ", ".join(sorted(p.label for p in printers))

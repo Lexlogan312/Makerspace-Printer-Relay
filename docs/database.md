@@ -1,6 +1,7 @@
   # Database
 
-All tables live in Supabase's `public` schema. The migrations in `sql/` create everything below.
+All tables live in Supabase's `public` schema. [`sql/schema.sql`](../sql/schema.sql) creates everything below,
+and running it again brings an older database up to date.
 
 **Who can access what:**
 - **Public dashboard** (publishable key, no login): can read `printers` and `printer_status`.
@@ -13,9 +14,9 @@ All tables live in Supabase's `public` schema. The migrations in `sql/` create e
 |---|---|---|---|
 | `printers` | admins, plus relay for `filament_color`, `filament_color_name`, `filament_type`, `model`, `firmware_version` | everyone | One row per printer: serial, label, model, `maintenance_status` (`operational`, `reserved`, `maintenance` = out of service, `offline_permanent` = retired), `status_note` (shown to students with Reserved or Out of service), and the loaded filament (hex color, Elegoo color name, type) |
 | `printer_connections` | admins (`access_code`), relay (`host`, `last_error`) | admins | How to connect. Separate from `printers` because access codes must not be public |
-| `printer_status` | relay | everyone | Live state, one row per printer (upserted). `job_name` is the file name of the print in progress, shown on the public board at the technician's request (sql/12); the history in `print_jobs` stays staff-only. `snapshot_at` is when the latest camera photo was taken |
+| `printer_status` | relay | everyone | Live state, one row per printer (upserted). `job_name` is the file name of the print in progress, shown on the public board at the technician's request; the history in `print_jobs` stays staff-only. `snapshot_at` is when the latest camera photo was taken |
 | `discovered_printers` | relay | admins | Printers announcing themselves on the hotspot that aren't in `printers` yet |
-| `print_jobs` | relay | admins | One row per print: start/end, outcome, layers, filament. Admin-only because job names can identify students |
+| `print_jobs` | relay | admins | One row per print: start/end, outcome, filament. Admin-only, so past prints can't be traced to students |
 | `printer_events` | relay | admins | Each online/offline change, `gcode_state` change, and new error |
 | `relay_heartbeats` | relay | admins | One row per minute the relay is running and can reach Supabase |
 | `admins` | you, in the SQL editor | nobody (`is_admin()` checks it) | Which signed-in users are admins |
@@ -23,41 +24,38 @@ All tables live in Supabase's `public` schema. The migrations in `sql/` create e
 
 ### Adding a printer
 
-The staff dashboard (Printers > Add printer) does this in one step through the
-`add_printer(serial, label, access_code)` database function (migration 06), which adds both rows
-or neither and only works for admins. Without the dashboard:
-
-#### By hand
-
 1. On the printer's touchscreen, join it to the `MakerspacePrinters` hotspot and note its
    **access code** (LAN settings).
-2. Within ~10 s it appears in `discovered_printers` with its serial, model and IP.
-3. Until the admin dashboard exists, run this in the Supabase SQL Editor (one line per printer):
-
-   ```sql
-   with new_printers(serial, label, access_code) as (values
-     ('03900D5C0000001', 'PrinterNameOne', '12345678'),
-     ('03900D5C0000002', 'PrinterNameTwo', '87654321')
-   ),
-   added as (
-     insert into printers (serial, label)
-     select serial, label from new_printers
-     returning id, serial
-   )
-   insert into printer_connections (printer_id, access_code)
-   select added.id, new_printers.access_code
-   from added join new_printers using (serial);
-   ```
-
+2. Within ~10 s it appears on the dashboard's Printers page under printers found on the network.
+3. Add it there (Printers > Add printer), with a name and the access code. That calls the
+   `add_printer(serial, label, access_code)` database function, which adds both rows or neither
+   and only works for admins.
 4. Within ~30 s the relay connects: `printer_connections.host` fills in and `last_error` stays empty.
 
 The relay fills in `host`, `model` and `firmware_version`, and removes the printer from
-`discovered_printers`. The admin dashboard should do the same two inserts.
+`discovered_printers`.
+
+Without the dashboard, the same in the Supabase SQL Editor (one line per printer):
+
+```sql
+with new_printers(serial, label, access_code) as (values
+  ('03900D5C0000001', 'PrinterNameOne', '12345678'),
+  ('03900D5C0000002', 'PrinterNameTwo', '87654321')
+),
+added as (
+  insert into printers (serial, label)
+  select serial, label from new_printers
+  returning id, serial
+)
+insert into printer_connections (printer_id, access_code)
+select added.id, new_printers.access_code
+from added join new_printers using (serial);
+```
 
 ### Removing a printer
 
-Set `maintenance_status = 'offline_permanent'`. The relay disconnects and closes any open
-print job, and the history is kept. Deleting the row instead removes its status and events.
+Retire it from the dashboard (Edit > Retire), which sets `maintenance_status = 'offline_permanent'`.
+The relay disconnects and closes any open print job, and the history is kept. Deleting the row instead removes its status and events.
 Its print jobs are kept (with `printer_id` set to null) so fleet totals stay correct.
 
 ### `last_error` messages
@@ -100,7 +98,7 @@ Every stat uses full 24-hour days in the `America/New_York` time zone (set in
 | `printer_utilization_daily` | day, printer_id, printer_label, printing_hours, utilization_percent | Hours printing ÷ 24, per printer |
 | `fleet_utilization_daily` | day, printing_hours, printer_count, utilization_percent | Same for all printers (÷ 24 × printers not retired) |
 | `busy_hours_daily` | day, weekday (1 = Mon), hour, busy_printers | Average printers printing in that hour. Average over weeks for the heatmap |
-| `print_jobs_daily` | day, printer_id, printer_label, jobs_started, finished, failed, unknown, in_progress, avg_finished_minutes, canceled | Job counts and success rate |
+| `print_jobs_daily` | day, printer_id, printer_label, jobs_started, finished, failed, unknown, in_progress, avg_finished_minutes, canceled | Job counts by outcome |
 | `filament_usage_daily` | day, filament_type, color_name, jobs, printing_hours | Which filament gets used |
 | `printer_reliability_daily` | day, printer_id, printer_label, offline_hours, errors (cancellations excluded) | Printers that may need maintenance |
 | `relay_uptime_daily` | day, minutes_up, minutes_total, uptime_percent, max_latency_ms, p95_latency_ms, avg_printers_online | The >95% uptime and <10 s latency goals |

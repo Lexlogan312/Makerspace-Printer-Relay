@@ -1,7 +1,7 @@
 """Turn a printer's raw merged MQTT state into the flat record the dashboard uses."""
 
 import colorsys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from .config import Printer
 
@@ -17,16 +17,18 @@ GCODE_STATE_TO_STATUS = {
     "FAILED": "failed",
 }
 
+# A print is in progress (paused counts): history keeps its print_jobs row open, the camera
+# photographs it often, and with [camera] light = "auto" its light is on.
+ACTIVE_STATES = {"PREPARE", "SLICING", "RUNNING", "PAUSE"}
+
 EXTERNAL_SPOOL = 254
 
-# These change on every push (wifi_signal jitters a few dBm on every report). Leave them out
-# when checking whether a record actually changed. The heartbeat still sends them.
-# Sent with every push, but changes to these alone don't trigger one: temperatures wobble every
-# second while printing, and the layer number ticks constantly. They still go out with any real
-# change and with the once-a-minute refresh. (Each push is a Supabase request, and every request
-# is a log entry; log volume is limited.)
-# A new camera photo (snapshot_at) is volatile too: it rides along with the next push, except while
-# someone is watching that printer (the relay pushes it right away then; see Relay._push_status).
+# Sent with every push, but changes to these alone don't trigger one: timestamps move on every
+# report, wifi_signal jitters a few dBm, temperatures wobble every second while printing, and the
+# layer number ticks constantly. They still go out with any real change and with the once-a-minute
+# refresh. (Each push is a Supabase request, and every request is a log entry; log volume is limited.)
+# A new camera photo (snapshot_at) rides along the same way, except while someone is watching that
+# printer (the relay pushes it right away then; see Relay._push_status).
 VOLATILE_FIELDS = {"last_seen", "estimated_completion", "wifi_signal", "nozzle_temp", "bed_temp", "layer_current",
                    "snapshot_at"}
 
@@ -83,22 +85,20 @@ def active_filament(p: dict) -> dict | None:
 
 def build_status(printer: Printer, state: dict, connected: bool,
                  last_message_at: float | None, now: datetime | None = None) -> dict:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     p = state.get("print") or {}
 
     gcode_state = p.get("gcode_state")
-    if not connected:
-        status = "offline"
-    else:
-        status = GCODE_STATE_TO_STATUS.get(gcode_state, "unknown")
+    status = GCODE_STATE_TO_STATUS.get(gcode_state, "unknown") if connected else "offline"
+    in_progress = status in ("printing", "paused")
 
-    printing = status == "printing"
     percent = _int(p.get("mc_percent"))
     remaining = _int(p.get("mc_remaining_time"))  # minutes
-    eta = now + timedelta(minutes=remaining) if printing and remaining is not None else None
+    eta = now + timedelta(minutes=remaining) if status == "printing" and remaining is not None else None
 
     active = active_filament(p) or {}
-    last_seen = datetime.fromtimestamp(last_message_at, timezone.utc) if last_message_at else None
+    color = _hex_color(active.get("tray_color"))
+    last_seen = datetime.fromtimestamp(last_message_at, UTC) if last_message_at else None
 
     return {
         "printer_id": printer.id,
@@ -106,8 +106,8 @@ def build_status(printer: Printer, state: dict, connected: bool,
         "status": status,
         "gcode_state": gcode_state,
         "online": connected,
-        "progress_percent": percent if printing or status == "paused" else None,
-        "remaining_minutes": remaining if printing or status == "paused" else None,
+        "progress_percent": percent if in_progress else None,
+        "remaining_minutes": remaining if in_progress else None,
         "estimated_completion": _iso(eta),
         "job_name": p.get("subtask_name") or None,
         "layer_current": _int(p.get("layer_num")),
@@ -117,8 +117,8 @@ def build_status(printer: Printer, state: dict, connected: bool,
         "bed_temp": _round(p.get("bed_temper")),
         "bed_target": _round(p.get("bed_target_temper")),
         "filament_type": active.get("tray_type") or None,
-        "filament_color": _hex_color(active.get("tray_color")),
-        "filament_color_name": color_name(_hex_color(active.get("tray_color"))),
+        "filament_color": color,
+        "filament_color_name": color_name(color),
         "print_error": _int(p.get("print_error")) or 0,
         "wifi_signal": p.get("wifi_signal") or None,
         "last_seen": _iso(last_seen),
@@ -185,11 +185,17 @@ def color_family(rgb: tuple[int, int, int]) -> str:
     return next(family for limit, family in HUE_FAMILIES if hue < limit)
 
 
-_FAMILY_CHOICES: dict[str, list[tuple[str, tuple[int, int, int]]]] = {}
-for _name, _hex in FILAMENT_COLORS.items():
-    if _name not in EXACT_ONLY:
-        _rgb_value = _rgb(_hex)
-        _FAMILY_CHOICES.setdefault(color_family(_rgb_value), []).append((_name, _rgb_value))
+def _family_choices() -> dict[str, list[tuple[str, tuple[int, int, int]]]]:
+    """Color family -> the Elegoo colors in it (except the exact-only ones), with their RGB."""
+    choices: dict[str, list[tuple[str, tuple[int, int, int]]]] = {}
+    for name, hex_color in FILAMENT_COLORS.items():
+        if name not in EXACT_ONLY:
+            rgb = _rgb(hex_color)
+            choices.setdefault(color_family(rgb), []).append((name, rgb))
+    return choices
+
+
+_FAMILY_CHOICES = _family_choices()
 
 
 def color_name(hex_color: str | None) -> str | None:

@@ -6,22 +6,22 @@ from relay.discovery import Discovery, parse_announcement
 
 # Captured from FlintLockwood with tcpdump on the makerspace network
 PACKET = (
-    "NOTIFY * HTTP/1.1\r\n"
-    "HOST: 239.255.255.250:1900\r\n"
-    "Server: UPnP/1.0\r\n"
-    "Location: 172.20.10.9\r\n"
-    "NT: urn:bambulab-com:device:3dprinter:1\r\n"
-    "USN: 03900D5C2000916\r\n"
-    "Cache-Control: max-age=1800\r\n"
-    "DevModel.bambu.com: N2S\r\n"
-    "DevName.bambu.com: 3DP-039-916\r\n"
-    "DevSignal.bambu.com: -49\r\n"
-    "DevConnect.bambu.com: lan\r\n"
-    "DevBind.bambu.com: free\r\n"
-    "Devseclink.bambu.com: secure\r\n"
-    "DevVersion.bambu.com: 01.08.00.00\r\n"
-    "DevCap.bambu.com: 1\r\n\r\n"
-).encode()
+    b"NOTIFY * HTTP/1.1\r\n"
+    b"HOST: 239.255.255.250:1900\r\n"
+    b"Server: UPnP/1.0\r\n"
+    b"Location: 172.20.10.9\r\n"
+    b"NT: urn:bambulab-com:device:3dprinter:1\r\n"
+    b"USN: 03900D5C2000916\r\n"
+    b"Cache-Control: max-age=1800\r\n"
+    b"DevModel.bambu.com: N2S\r\n"
+    b"DevName.bambu.com: 3DP-039-916\r\n"
+    b"DevSignal.bambu.com: -49\r\n"
+    b"DevConnect.bambu.com: lan\r\n"
+    b"DevBind.bambu.com: free\r\n"
+    b"Devseclink.bambu.com: secure\r\n"
+    b"DevVersion.bambu.com: 01.08.00.00\r\n"
+    b"DevCap.bambu.com: 1\r\n\r\n"
+)
 
 
 def test_parses_real_announcement():

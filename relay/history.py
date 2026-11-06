@@ -13,9 +13,8 @@ while the relay is running.
 import uuid
 from datetime import datetime, timedelta
 
-from .status import color_name
+from .status import ACTIVE_STATES, color_name
 
-ACTIVE_STATES = {"PREPARE", "SLICING", "RUNNING", "PAUSE"}
 END_OUTCOMES = {"FINISH": "finished", "FAILED": "failed"}  # leaving an active state any other way -> "unknown"
 # A canceled print ends in FAILED with this error code ("0300-400C", the task was canceled),
 # so it's recorded as "canceled" and doesn't count as a failure.

@@ -40,6 +40,20 @@ def light_mode(report: dict) -> str | None:
     return None
 
 
+def mqtt_client(access_code: str, name: str) -> mqtt.Client:
+    """An MQTT client for a printer's local broker: user "bblp" with the LAN access code, over TLS.
+    The printer's certificate is self-signed, so it isn't checked (the same as turning off
+    "SSL Secure" in MQTTX)."""
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"{name}-{uuid.uuid4().hex[:8]}",
+                         protocol=mqtt.MQTTv311)
+    client.username_pw_set("bblp", access_code)
+    tls = ssl.create_default_context()
+    tls.check_hostname = False
+    tls.verify_mode = ssl.CERT_NONE
+    client.tls_set_context(tls)
+    return client
+
+
 def deep_merge(base: dict, update: dict) -> dict:
     """Merge `update` into `base` in place.
 
@@ -86,17 +100,7 @@ class PrinterConnection:
             dump_dir.mkdir(parents=True, exist_ok=True)
             self._dump_file = (dump_dir / f"{printer.serial}.jsonl").open("a", encoding="utf-8")
 
-        self._client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION2,
-            client_id=f"makerspace-relay-{uuid.uuid4().hex[:8]}",
-            protocol=mqtt.MQTTv311,
-        )
-        self._client.username_pw_set("bblp", printer.access_code)
-        # Printers use a self-signed cert, which is the same as turning off "SSL Secure" in MQTTX.
-        tls = ssl.create_default_context()
-        tls.check_hostname = False
-        tls.verify_mode = ssl.CERT_NONE
-        self._client.tls_set_context(tls)
+        self._client = mqtt_client(printer.access_code, "makerspace-relay")
         self._client.reconnect_delay_set(min_delay=1, max_delay=30)
         self._client.on_connect = self._on_connect
         self._client.on_connect_fail = self._on_connect_fail

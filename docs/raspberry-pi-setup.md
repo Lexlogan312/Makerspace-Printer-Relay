@@ -23,9 +23,6 @@ a network change cuts you off:
 - an **Ethernet cable** straight from your Mac (or a USB-C Ethernet adapter) to the Pi. Then
   `ssh <username>@makerspace-relay.local` works with no network at all.
 
-Wherever "admin dashboard" appears below: until the dashboard is built, use Supabase's
-**Table Editor** on the same tables instead.
-
 ## What you need
 
 - Raspberry Pi 5, the official 27 W USB-C power supply, and a microSD card (16 GB or more)
@@ -34,7 +31,7 @@ Wherever "admin dashboard" appears below: until the dashboard is built, use Supa
   - a **USB Wi-Fi adapter** with Linux drivers, for campus Wi-Fi
 - A computer with [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
 - Your working `relay.toml` (Supabase URL and **secret** key `sb_secret_…`), and the database
-  migrations already run and printers imported (see the README)
+  already set up with `sql/schema.sql` (see the README)
 
 > **Check with ONU IT first.** Campus networks usually need headless devices
 > registered by MAC address, and campus Wi-Fi is usually WPA2-Enterprise (username and password)
@@ -106,7 +103,7 @@ git clone https://github.com/<you>/<repo>.git ~/printer-relay
 **Otherwise, copy it from your Mac.** Run this in the project folder on the Mac:
 
 ```bash
-rsync -av --exclude .venv --exclude raw --exclude .idea --exclude __pycache__ --exclude relay.toml --exclude printers.toml ./ <username>@makerspace-relay.local:printer-relay/
+rsync -av --exclude .venv --exclude raw --exclude .idea --exclude __pycache__ --exclude relay.toml ./ <username>@makerspace-relay.local:printer-relay/
 ```
 
 Then copy the config separately. It's gitignored because it holds the Supabase secret key:
@@ -248,12 +245,12 @@ On **each** printer's touchscreen:
 2. Turn on **LAN Only Mode**. The printer has no internet here, so this stops it trying to
    reach Bambu's cloud.
 3. Note the **Access Code** shown in the LAN settings. If it's different from the one in
-   Supabase, update it in the admin dashboard (`printer_connections.access_code`).
+   Supabase, update it in the dashboard (Printers > Edit).
 
 **IP addresses are found automatically.** Each printer announces its IP on the hotspot every
 ~10 seconds, and the relay connects to it and saves it to `printer_connections.host`. When a
 printer gets a new IP, the relay reconnects within about 10 seconds. A printer that isn't in
-Supabase yet shows up in the `discovered_printers` table, ready to add from the admin dashboard.
+Supabase yet shows up in the `discovered_printers` table, ready to add from the dashboard.
 
 > If a printer's `last_error` says the access code was rejected even though it's right, the
 > printer's firmware may be restricting LAN access. Turn on **Developer Mode** (next to LAN Only
@@ -361,8 +358,8 @@ Optional but recommended: turn on automatic security updates with
 | Update the code (git) | `cd ~/printer-relay && git pull && uv sync && sudo systemctl restart printer-relay` |
 | Update the service file (after `deploy/printer-relay.service` changes) | `cd ~/printer-relay && sed "s/__USER__/$USER/g" deploy/printer-relay.service \| sudo tee /etc/systemd/system/printer-relay.service && sudo systemctl daemon-reload && sudo systemctl restart printer-relay` |
 | See which printers are on the hotspot | `sudo cat /var/lib/NetworkManager/dnsmasq-wlan0.leases` |
-| Add a printer | Join it to the hotspot (step 8). It appears in `discovered_printers`. Add it with its label and access code in the admin dashboard. The relay connects within 30 s, no restart needed |
-| Remove a printer | Set its `maintenance_status` to `offline_permanent` in the dashboard. This keeps its history (deleting the row erases it) |
+| Add a printer | Join it to the hotspot (step 8). It appears on the dashboard's Printers page as found on the network; add it there with a name and its access code. The relay connects on its next printer sync (`printer_sync_interval_s`), no restart needed |
+| Remove a printer | Retire it in the dashboard (Printers > Edit > Retire). This keeps its history; Delete erases it |
 
 ## Troubleshooting
 

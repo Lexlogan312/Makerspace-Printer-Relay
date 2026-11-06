@@ -1,13 +1,20 @@
 """Camera snapshots: the printer's frame protocol, the worker, and which printers get photographed."""
 
 import struct
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from relay.camera import CameraError, CameraTarget, SnapshotWorker, login_packet, read_frame, read_settled_frame
-from tests.fixtures import PRINTER, state
-from tests.test_app import FakeConnection, make_relay
+from relay.camera import (
+    CameraError,
+    CameraTarget,
+    SnapshotWorker,
+    login_packet,
+    read_frame,
+    read_settled_frame,
+)
+from relay.database import NEEDS_SNAPSHOT_SETUP, DatabaseError
+from tests.fixtures import PRINTER, FakeConnection, make_relay, state
 
 JPEG = b"\xff\xd8\xff\xe0" + b"pixels" * 100 + b"\xff\xd9"
 
@@ -58,7 +65,7 @@ def test_rejects_a_bad_header_and_a_closed_connection():
         read_frame(FakeSocket(framed(JPEG)[:40]))
 
 
-class FakeDB:
+class FakeStorage:
     def __init__(self):
         self.uploads = []
 
@@ -67,7 +74,7 @@ class FakeDB:
 
 
 def test_worker_uploads_each_target_and_one_failure_does_not_stop_the_rest(caplog):
-    db = FakeDB()
+    db = FakeStorage()
     targets = [CameraTarget("a", "Fred", "10.42.0.1", "1"), CameraTarget("b", "Flint", "10.42.0.2", "2")]
 
     def grab(host, code):
@@ -75,7 +82,7 @@ def test_worker_uploads_each_target_and_one_failure_does_not_stop_the_rest(caplo
             raise CameraError("refused")
         return JPEG
 
-    when = datetime(2026, 10, 9, 15, 0, tzinfo=timezone.utc)
+    when = datetime(2026, 10, 9, 15, 0, tzinfo=UTC)
     photos = []
     worker = SnapshotWorker(db, lambda: targets, grab=grab, wall_clock=lambda: when,
                             on_photo=lambda pid, taken_at: photos.append((pid, taken_at)))
@@ -88,7 +95,7 @@ def test_worker_uploads_each_target_and_one_failure_does_not_stop_the_rest(caplo
 
 
 def test_printing_printers_are_photographed_and_open_ones_flagged_as_not_printing():
-    relay, db, disc, clock = make_relay()
+    relay, _db, disc, clock = make_relay()
     disc.announce(PRINTER.serial, "10.42.0.23")
     relay.tick()
     assert relay.camera_targets() == []          # connected, but no report yet
@@ -106,9 +113,7 @@ def test_printing_printers_are_photographed_and_open_ones_flagged_as_not_printin
     assert relay.camera_targets() == [CameraTarget(PRINTER.id, PRINTER.label, "10.42.0.23", PRINTER.access_code)]
 
 
-def test_a_missing_migration_is_reported_once_for_all_printers(caplog):
-    from relay.database import NEEDS_SNAPSHOT_SETUP, DatabaseError
-
+def test_a_missing_database_setup_is_reported_once_for_all_printers(caplog):
     class NoBucket:
         def upload_snapshot(self, *args):
             raise DatabaseError(NEEDS_SNAPSHOT_SETUP, status=404)
@@ -117,7 +122,7 @@ def test_a_missing_migration_is_reported_once_for_all_printers(caplog):
     worker = SnapshotWorker(NoBucket(), lambda: targets, grab=lambda h, c: JPEG)
     worker.capture_all()
     worker.capture_all()
-    assert sum("sql/07" in r.message for r in caplog.records) == 1
+    assert sum("schema.sql" in r.message for r in caplog.records) == 1
 
 
 class Clock:
@@ -128,7 +133,7 @@ class Clock:
 def schedule(watched=(), watch_max=6, photos=None):
     clock, targets = Clock(), {}
     photos = photos if photos is not None else {"on": True}
-    worker = SnapshotWorker(FakeDB(), lambda: list(targets.values()), printing_s=60, idle_s=300, watch_s=4,
+    worker = SnapshotWorker(FakeStorage(), lambda: list(targets.values()), printing_s=60, idle_s=300, watch_s=4,
                             watch_max=watch_max, watched=lambda: set(watched), clock=clock,
                             photos_wanted=lambda: photos["on"])
 
@@ -145,7 +150,7 @@ def target(pid, printing):
 
 
 def test_printing_every_minute_open_every_five_and_once_right_after_a_print_ends():
-    worker, clock, targets, due = schedule()
+    _worker, clock, targets, due = schedule()
     targets["p"] = target("p", True)
     targets["o"] = target("o", False)
     assert sorted(due()) == ["o", "p"]   # first photo of each straight away
@@ -164,7 +169,7 @@ def test_printing_every_minute_open_every_five_and_once_right_after_a_print_ends
 
 def test_printing_slows_to_the_open_schedule_while_nobody_has_photos_on():
     photos = {"on": False}
-    worker, clock, targets, due = schedule(photos=photos)
+    _worker, clock, targets, due = schedule(photos=photos)
     targets["p"] = target("p", True)
     assert due() == ["p"]
     clock.t = 60
@@ -179,7 +184,7 @@ def test_printing_slows_to_the_open_schedule_while_nobody_has_photos_on():
 
 
 def test_watched_printers_refresh_every_few_seconds_up_to_a_limit():
-    worker, clock, targets, due = schedule(watched={"a", "b", "c"}, watch_max=2)
+    _worker, clock, targets, due = schedule(watched={"a", "b", "c"}, watch_max=2)
     for pid in "abc":
         targets[pid] = target(pid, False)
     due()
@@ -188,17 +193,9 @@ def test_watched_printers_refresh_every_few_seconds_up_to_a_limit():
 
 
 def test_a_printer_already_being_photographed_is_not_queued_twice():
-    worker, clock, targets, due = schedule()
+    worker, clock, targets, _due = schedule()
     targets["p"] = target("p", True)
     assert [t.printer_id for t in worker.due()] == ["p"]   # still in flight
     clock.t = 120
     assert worker.due() == []
 
-
-def test_light_command_and_report_parsing():
-    from relay.light import ledctrl, light_mode
-    assert ledctrl("on")["system"] == {"sequence_id": "0", "command": "ledctrl", "led_node": "chamber_light",
-                                       "led_mode": "on", "led_on_time": 500, "led_off_time": 500,
-                                       "loop_times": 0, "interval_time": 0}
-    assert light_mode({"print": {"lights_report": [{"node": "chamber_light", "mode": "off"}]}}) == "off"
-    assert light_mode({"print": {"gcode_state": "IDLE"}}) is None

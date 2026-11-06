@@ -8,7 +8,7 @@ import logging
 
 import requests
 
-from .config import Printer
+from .config import Printer, load_config
 from .history import JOB_COLUMNS
 from .status import format_status_line
 
@@ -33,10 +33,7 @@ def _in(values) -> str:
 
 
 def _status_row(r: dict) -> dict:
-    """A status record (relay/status.py) -> a printer_status row.
-
-    printer_status is publicly readable, so it never carries the job name (it can identify a
-    student). Staff see the current job through print_jobs instead."""
+    """A status record (relay/status.py) -> a printer_status row. printer_status is publicly readable."""
     row = {"printer_id": r["printer_id"], "is_online": r["online"]}
     if r["last_seen"]:
         row["last_seen"] = r["last_seen"]
@@ -53,18 +50,18 @@ def _status_row(r: dict) -> dict:
         "wifi_signal": r["wifi_signal"],
         "print_error": r["print_error"],
     })
-    # The print's file name is shown on the public board (the technician asked for it; see
-    # sql/12). Sent even when empty, so a finished print's name is cleared.
-    row["job_name"] = r.get("job_name")
+    # The print's file name is shown on the public board (the technician asked for it).
+    # Sent even when empty, so a finished print's name is cleared.
+    row["job_name"] = r["job_name"]
     if r.get("snapshot_at"):
         row["snapshot_at"] = r["snapshot_at"]  # when the latest camera photo was taken
     return row
 
 
 SNAPSHOT_BUCKET = "printer-snapshots"
-NEEDS_SNAPSHOT_SETUP = "camera photos need sql/07_camera_snapshots.sql: run it once in the Supabase SQL editor"
-NEEDS_JOB_NAME_SETUP = "file names on the board need sql/12_reserved_and_file_names.sql: run it once in the Supabase SQL editor"
-# Columns added by later migrations: if one is missing, status keeps flowing without it.
+NEEDS_SNAPSHOT_SETUP = "camera photos need the latest database setup: run sql/schema.sql in the Supabase SQL editor"
+NEEDS_JOB_NAME_SETUP = "file names on the board need the latest database setup: run sql/schema.sql in the Supabase SQL editor"
+# Columns an older database may not have yet: if one is missing, status keeps flowing without it.
 OPTIONAL_STATUS_COLUMNS = {"snapshot_at": NEEDS_SNAPSHOT_SETUP, "job_name": NEEDS_JOB_NAME_SETUP}
 
 
@@ -114,7 +111,7 @@ class Database:
             rows = self._request("GET", "printer_status", params={
                 "select": columns + ",snapshot_at", "printer_id": _in(printer_ids)})
         except DatabaseError as e:
-            if "snapshot_at" not in str(e):  # the column comes from migration 07
+            if "snapshot_at" not in str(e):  # an older database may not have it yet
                 raise
             rows = self._request("GET", "printer_status", params={"select": columns, "printer_id": _in(printer_ids)})
         return {r["printer_id"]: r for r in rows}
@@ -145,7 +142,7 @@ class Database:
         try:
             self._upsert("printer_status", rows, on_conflict="printer_id")
         except DatabaseError as e:
-            # A column from a later migration is missing: say which, and send the rest without it.
+            # An older database is missing a column: say which, and send the rest without it.
             missing = next((c for c in OPTIONAL_STATUS_COLUMNS if c in str(e) and any(c in row for row in rows)), None)
             if missing is None:
                 raise
@@ -199,15 +196,6 @@ class Database:
             raise DatabaseError(f"Supabase Storage upload failed ({resp.status_code}): {resp.text[:300]}",
                                 status=resp.status_code)
 
-    # used by import_printers.py
-
-    def upsert_printers(self, rows: list[dict]) -> list[dict]:
-        return self._request("POST", "printers", params={"on_conflict": "serial", "select": "id,serial"}, json=rows,
-                             headers={"Prefer": "resolution=merge-duplicates,return=representation"})
-
-    def upsert_connections(self, rows: list[dict]) -> None:
-        self._upsert("printer_connections", rows, on_conflict="printer_id")
-
     # plumbing
 
     def _upsert(self, table: str, rows: list[dict], on_conflict: str, resolution: str = "merge-duplicates") -> None:
@@ -223,6 +211,16 @@ class Database:
             raise DatabaseError(f"Supabase {method} {table} failed ({resp.status_code}): {resp.text[:300]}",
                                 status=resp.status_code)
         return resp.json() if resp.content else None
+
+
+def load_printers_from_config(config_path: str) -> list[Printer]:
+    """Every printer, read with the Supabase credentials in relay.toml (for the test commands)."""
+    config = load_config(config_path)
+    db = Database(config.supabase_url, config.supabase_key)
+    try:
+        return db.load_printers()
+    finally:
+        db.close()
 
 
 class DryRunDatabase(Database):

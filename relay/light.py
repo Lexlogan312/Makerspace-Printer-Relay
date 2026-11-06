@@ -1,8 +1,8 @@
-"""Test whether a printer's light can be switched over the local network.
+"""Test whether printers accept light commands over the local network.
 
-A one-off check before building it into the relay: the relay itself still only reads from
-printers. This connects to the printer's MQTT broker (as the relay does), reads the light's
-current state, switches it, waits for the printer to confirm, then puts it back as it was.
+Run this before setting [camera] light = "auto" (the relay's own light control is in app.py).
+It connects to the printer's MQTT broker (as the relay does), reads the light's current state,
+switches it, waits for the printer to confirm, then puts it back as it was.
 
     uv run python -m relay.light --printer "Fred Printstone"           # on for 5 s, then back
     uv run python -m relay.light --printer "Fred Printstone" --mode on  # just turn it on
@@ -16,15 +16,15 @@ ignore control commands while signed in to Bambu Cloud; on the offline hotspot t
 
 import argparse
 import json
-import ssl
 import sys
 import threading
 import time
-import uuid
 
-import paho.mqtt.client as mqtt
+from .database import load_printers_from_config
+from .printer import LIGHT, MQTT_PORT, PUSHALL, ledctrl, light_mode, mqtt_client
 
-from .printer import LIGHT, MQTT_PORT, PUSHALL, ledctrl, light_mode
+CONFIRM_S = 8.0  # how long to wait for the printer to report the new light state
+
 
 class LightTest:
     def __init__(self, host: str, serial: str, access_code: str):
@@ -37,13 +37,7 @@ class LightTest:
         self.connected = threading.Event()
         self.error: str | None = None
 
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
-                                  client_id=f"makerspace-lighttest-{uuid.uuid4().hex[:8]}", protocol=mqtt.MQTTv311)
-        self.client.username_pw_set("bblp", access_code)
-        tls = ssl.create_default_context()
-        tls.check_hostname = False
-        tls.verify_mode = ssl.CERT_NONE         # the printer's certificate is self-signed
-        self.client.tls_set_context(tls)
+        self.client = mqtt_client(access_code, "makerspace-lighttest")
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
 
@@ -69,11 +63,19 @@ class LightTest:
                 self.mode = mode
                 self.changed.notify_all()
 
+    def start(self) -> None:
+        self.client.connect_async(self.host, MQTT_PORT, keepalive=30)
+        self.client.loop_start()
+
+    def close(self) -> None:
+        self.client.disconnect()
+        self.client.loop_stop()
+
     def wait_for(self, predicate, timeout: float) -> bool:
         with self.changed:
             return self.changed.wait_for(predicate, timeout)
 
-    def set(self, mode: str, timeout: float = 8.0) -> bool:
+    def set(self, mode: str, timeout: float = CONFIRM_S) -> bool:
         self.client.publish(self.request_topic, json.dumps(ledctrl(mode)))
         # Ask for a full report too, in case the printer only reports the light occasionally.
         time.sleep(0.5)
@@ -85,8 +87,7 @@ def run_one(label: str, host: str, serial: str, code: str, mode: str, hold: floa
             say=print, started: threading.Barrier | None = None) -> str:
     """Switch one printer's light (and restore it in test mode). Returns a one-line result."""
     test = LightTest(host, serial, code)
-    test.client.connect_async(host, MQTT_PORT, keepalive=30)
-    test.client.loop_start()
+    test.start()
     try:
         if not test.connected.wait(15):
             return "no answer (is it on and on this network?)"
@@ -104,27 +105,20 @@ def run_one(label: str, host: str, serial: str, code: str, mode: str, hold: floa
                 pass
         if not test.set(target):
             note = f" (printer replied {test.replies[-1]})" if test.replies else ""
-            return f"no confirmation after 8 s, still {test.mode}{note}"
+            return f"no confirmation after {CONFIRM_S:g} s, still {test.mode}{note}"
         if mode != "test":
             return f"turned {target} (confirmed)"
         time.sleep(hold)
         restored = test.set(before) if before != target else True
         return f"on (confirmed), then back {before}" + ("" if restored else " NOT confirmed: check it")
     finally:
-        test.client.disconnect()
-        test.client.loop_stop()
+        test.close()
 
 
 def run_all(config_path: str, mode: str, hold: float) -> None:
-    from .config import load_config
-    from .database import Database
-    config = load_config(config_path)
-    db = Database(config.supabase_url, config.supabase_key)
-    try:
-        printers = [p for p in db.load_printers() if not p.retired and p.host and p.access_code]
-    finally:
-        db.close()
-    print(f"Switching {len(printers)} printers' lights {'on for %g s, then back' % hold if mode == 'test' else mode}…")
+    printers = [p for p in load_printers_from_config(config_path) if not p.retired and p.host and p.access_code]
+    how = f"on for {hold:g} s, then back" if mode == "test" else mode
+    print(f"Switching {len(printers)} printers' lights {how}…")
     results: dict[str, str] = {}
     lock = threading.Lock()
     barrier = threading.Barrier(len(printers), timeout=20) if printers else None
@@ -132,7 +126,7 @@ def run_all(config_path: str, mode: str, hold: float) -> None:
     def worker(p):
         try:
             result = run_one(p.label, p.host, p.serial, p.access_code, mode, hold, say=lambda m: None, started=barrier)
-        except Exception as e:  # one printer's problem shouldn't hide the others' results
+        except Exception as e:  # noqa: BLE001 - one printer's problem shouldn't hide the others' results
             result = f"error: {e}"
         if barrier is not None and not result.startswith(("on", "turned", "no confirmation")):
             barrier.abort()  # don't keep the others waiting for a printer that never connected
@@ -171,14 +165,7 @@ def main() -> None:
         run_all(args.config, args.mode, args.hold)
         return
     if args.printer:
-        from .config import load_config
-        from .database import Database
-        config = load_config(args.config)
-        db = Database(config.supabase_url, config.supabase_key)
-        try:
-            matches = [p for p in db.load_printers() if p.label.casefold() == args.printer.casefold()]
-        finally:
-            db.close()
+        matches = [p for p in load_printers_from_config(args.config) if p.label.casefold() == args.printer.casefold()]
         if not matches or not matches[0].host or not matches[0].access_code:
             sys.exit(f"error: no printer named {args.printer!r} with an IP and access code")
         p = matches[0]
@@ -190,8 +177,7 @@ def main() -> None:
 
     test = LightTest(host, serial, code)
     print(f"Connecting to {label} at {host}:{MQTT_PORT}…")
-    test.client.connect_async(host, MQTT_PORT, keepalive=30)
-    test.client.loop_start()
+    test.start()
     try:
         if not test.connected.wait(15):
             sys.exit("error: no answer from the printer. Is it on and on this network?")
@@ -209,7 +195,7 @@ def main() -> None:
                 print(f"  The printer confirmed: light {mode}.")
             else:
                 note = f" The printer replied: {test.replies[-1]}" if test.replies else ""
-                print(f"  No confirmation after 8 s (it still reports {test.mode}).{note}")
+                print(f"  No confirmation after {CONFIRM_S:g} s (it still reports {test.mode}).{note}")
                 print("  Look at the printer to see whether the light changed. If it didn't, the printer is "
                       "ignoring control commands (for example while signed in to Bambu Cloud).")
                 break
@@ -217,8 +203,7 @@ def main() -> None:
                 print(f"  Leaving it on for {hold:g} s. Check the printer (or take a camera photo).")
                 time.sleep(hold)
     finally:
-        test.client.disconnect()
-        test.client.loop_stop()
+        test.close()
 
 
 if __name__ == "__main__":
