@@ -14,6 +14,10 @@ The relay is read-only with respect to printing. The
 only commands it sends are a request for a full status report and, if enabled, switching a
 printer's light on for camera photos.
 
+**Documentation:** [setup guide](docs/setup.md) (the whole system, and routine jobs) ·
+[troubleshooting](docs/troubleshooting.md) · [Raspberry Pi setup](docs/raspberry-pi-setup.md) ·
+[database reference](docs/database.md)
+
 ## Requirements
 
 - Python 3.13 and [uv](https://docs.astral.sh/uv/)
@@ -67,8 +71,7 @@ On the Pi the relay runs as the `printer-relay` systemd service.
 | Save raw MQTT messages for debugging | `uv run python -m relay --dump-raw raw/` |
 
 Connection problems are reported per printer on the dashboard and in
-`printer_connections.last_error`. See the troubleshooting table in
-[docs/raspberry-pi-setup.md](docs/raspberry-pi-setup.md#troubleshooting).
+`printer_connections.last_error`. See [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## How it works
 
@@ -104,5 +107,5 @@ relay/
 tests/            pytest suite, including property-based tests (Hypothesis)
 sql/schema.sql    complete database setup
 deploy/           systemd units and firewall rules for the Pi
-docs/             Pi setup guide and database reference
+docs/             setup, troubleshooting, Pi setup and database guides
 ```

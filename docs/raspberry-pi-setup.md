@@ -275,16 +275,4 @@ they show offline briefly.
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---|---|
-| A printer shows offline | The dashboard's Printers page shows why: not on the network, or access code rejected |
-| "Not seen on the network" | The printer is off or not joined to `MakerspacePrinters` |
-| "Access code rejected" | Fix the code on the dashboard (Edit), or turn on Developer Mode on the printer (step 8) |
-| Can't SSH to `makerspace-relay.local` | `.local` doesn't work on campus. Use the IP address, or Raspberry Pi Connect |
-| Can't SSH to the IP | The IP may have changed (ask IT for a DHCP reservation), or use Raspberry Pi Connect |
-| Log: `unknown model code` | A new printer model. Add its code to `MODEL_NAMES` in `relay/discovery.py` |
-| `Supabase … failed (401)` | Wrong key in `relay.toml`. The relay needs the `sb_secret_` key, not `sb_publishable_` |
-| `Supabase … failed` with a connection error | The campus connection is down. Try `ping supabase.com` and `nmcli device` |
-| Wrong timestamps or TLS errors | The clock isn't synced. Check `timedatectl` (step 5) |
-| Printers can't see `MakerspacePrinters` | The hotspot must be 2.4 GHz (`band bg`). Try another channel (step 6) |
-| All printers offline right after a restart | Normal for 1–2 minutes while they rejoin |
+See [troubleshooting.md](troubleshooting.md).
