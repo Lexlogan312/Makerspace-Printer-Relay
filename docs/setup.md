@@ -49,10 +49,12 @@ Do these in order. If you're only replacing one part (for example a new Pi), ski
    | `VITE_SUPABASE_URL` | the Project URL |
    | `VITE_SUPABASE_PUBLISHABLE_KEY` | the **publishable** key, never the secret one |
    | `VITE_SITE_URL` | `https://onu-3dprint.vercel.app` |
-   | `VITE_RESERVATION_EMAIL` | where students' reservation requests go (optional) |
 
 3. Deploy. From then on, every push to `main` deploys automatically. Changing a variable only
    takes effect after a redeploy (**Deployments → ⋯ → Redeploy**).
+4. **Reservation emails:** create the makerspace Gmail account, add its secrets in Supabase and
+   deploy the `request-reservation` function, as described under "Reservation emails" in the
+   dashboard repository's README.
 
 ### 3. Raspberry Pi and printers
 
@@ -90,7 +92,8 @@ account isn't a staff account".
 | **A printer's access code changed** | **Printers → Edit**, enter the new code |
 | **Add a staff member** | Step 4 above |
 | **Remove a staff member** | Supabase → **Authentication → Users** → delete the user (this also removes them from `admins`) |
-| **Change where reservation requests go** | Vercel → `VITE_RESERVATION_EMAIL`, then redeploy |
+| **Change where reservation requests go** | Supabase → **Edge Functions → Secrets** → `RESERVATION_EMAIL`. No redeploy needed |
+| **See past reservation requests** | Supabase → **Table Editor** → `reservation_requests` (kept 92 days) |
 | **Update the relay** after a code change | On the Pi: `cd ~/printer-relay && git pull && uv sync && sudo systemctl restart printer-relay` |
 | **Database change** in `sql/schema.sql` | Run the whole file again in the SQL Editor. It's safe to re-run |
 | **Replace the Supabase secret key** | Supabase → API Keys → create a new secret key. On the Pi, put it in `~/printer-relay/relay.toml` and run `sudo systemctl restart printer-relay`. Check the website updates, then delete the old key |

@@ -20,12 +20,13 @@ and running it again brings an older database up to date.
 | `printer_events` | relay | admins | Each online/offline change, `gcode_state` change, and new error |
 | `relay_heartbeats` | relay | admins | One row per minute the relay is running and can reach Supabase |
 | `admins` | you, in the SQL editor | nobody (`is_admin()` checks it) | Which signed-in users are admins |
+| `reservation_requests` | the dashboard's `request-reservation` Edge Function | admins | Students' reservation requests: printer, name, ONU email, date and message, and whether the email to staff went out. Deleted after 92 days |
 | `printer_error_codes` | `sql/schema.sql` | everyone | What each printer error code means: a group (`printer`, `filament`, `loading`, `file`, `power`, `canceled`), a short label for the board, and Bambu's full text. Unlisted codes count as `printer` |
 | Storage bucket `printer-snapshots` | relay | everyone (public bucket, no listing) | `<printer id>.jpg`: the latest camera photo of each printing printer, replaced each minute while someone has the board's Photos switch on, otherwise every 10 minutes. The dashboard adds `?v=<snapshot_at>` so a new photo never shows a cached old one |
 
 ### Old history is deleted after 92 days
 
-The dashboard shows at most 90 days, so a nightly job deletes `relay_heartbeats`, `printer_events` and finished `print_jobs` rows older
+The dashboard shows at most 90 days, so a nightly job deletes `relay_heartbeats`, `printer_events`, finished `print_jobs` and `reservation_requests` rows older
 than 92 days. Nothing else is deleted. To keep more, change `keep_days` in
 `delete_old_history()` (and the dashboard's longest range, in `AnalyticsPage.tsx`, to match).
 

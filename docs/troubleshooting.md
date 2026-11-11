@@ -24,7 +24,10 @@ parts fit together is in [setup.md](setup.md).
 | **"Printer error XXXX-XXXX"** | A code the system doesn't have a label for yet. Look it up, and add a label as described in [database.md](database.md#printer-error-codes) |
 | **A finished print still shows as printing** | The printer hasn't reported since. It corrects itself within about a minute; if not, see [A printer](#a-printer) |
 | **No camera photos** | Photos appear only for printers in use, and every few minutes unless someone has **Photos** on. If none ever appear: `journalctl -u printer-relay \| grep -i camera` on the Pi. A flat tan or gray image means the protective film is still on the camera lens |
-| **No "Request to reserve" button** | `VITE_RESERVATION_EMAIL` isn't set in Vercel (or wasn't when it last deployed), or you're signed in as staff, who don't see it |
+| **No "Request to reserve" button** | You're signed in as staff, who don't see it. Check in a private window |
+| **"Your request couldn't be sent right now"** | The function couldn't email. In Supabase → **Edge Functions → request-reservation → Logs**, look for the error; in **Table Editor → `reservation_requests`**, the `send_error` column says why. Usually the Gmail app password is wrong or was revoked (create a new one and update `GMAIL_APP_PASSWORD`), or the Gmail account was locked (sign in to it and confirm it's you) |
+| **"Your request couldn't be sent. Check your connection"** | The function isn't reachable: it isn't deployed, or was deployed without `supabase/config.toml` (it must accept calls without a login). Deploy it again from the dashboard repository |
+| **Staff don't receive requests** (but students see "Request sent") | Check spam, and that `RESERVATION_EMAIL` is right. `reservation_requests` shows every request and whether it was sent |
 
 ## A printer
 

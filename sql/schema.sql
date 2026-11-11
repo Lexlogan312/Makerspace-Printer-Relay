@@ -265,6 +265,32 @@ create or replace function public.error_category(p_code text)
 returns text language sql stable set search_path = ''
 as $$ select coalesce((select category from public.printer_error_codes where code = upper(p_code)), 'printer') $$;
 
+-- ───────────────────────────── Reservation requests (staff only) ─────────────────────────────
+-- Students' "Request to reserve" forms. The dashboard's request-reservation Edge Function saves
+-- each one here (with the project's secret key) and emails it to staff; this record is what its
+-- spam limits count. Nobody else can write here, and only staff can read it.
+create table if not exists public.reservation_requests (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz not null default now(),
+  printer_id    uuid references public.printers (id) on delete set null,
+  printer_label text not null,                -- the printer's name when it was requested
+  name          text not null,
+  email         text not null,                -- lowercase; staff reply here
+  date          date not null,
+  time          text,
+  purpose       text,
+  message       text,
+  sent_at       timestamptz,                  -- when the email went out
+  send_error    text                          -- why it didn't, if it failed
+);
+create index if not exists reservation_requests_email_created on public.reservation_requests (email, created_at);
+create index if not exists reservation_requests_created on public.reservation_requests (created_at);
+alter table public.reservation_requests enable row level security;
+revoke all on table public.reservation_requests from anon;
+grant select on table public.reservation_requests to authenticated;
+drop policy if exists "admins read" on public.reservation_requests;
+create policy "admins read" on public.reservation_requests for select to authenticated using (public.is_admin());
+
 -- ───────────────────────────── Analytics views (staff only) ─────────────────────────────
 -- Every stat uses full 24-hour days in the makerspace's time zone. Days with no activity have no
 -- row, so treat a missing day as 0. The views use security_invoker, so they follow the staff-only
@@ -462,9 +488,9 @@ end $$;
 
 -- ───────────────────────────── Deleting old history ─────────────────────────────
 -- The dashboard shows at most 90 days, so every night at about 4 AM, history older than 92 days is
--- deleted (two spare days keep the oldest day of the 90-day charts complete). Only the three
--- tables that grow forever; a print that's still running is never deleted. Printers, their
--- status, access codes and staff accounts are never touched.
+-- deleted (two spare days keep the oldest day of the 90-day charts complete). Only the tables
+-- that grow forever, including students' reservation requests; a print that's still running is
+-- never deleted. Printers, their status, access codes and staff accounts are never touched.
 -- To run it by hand: select public.delete_old_history();
 -- To see when it last ran: select * from cron.job_run_details order by start_time desc limit 5;
 create or replace function public.delete_old_history(keep_days integer default 92)
@@ -474,6 +500,7 @@ as $$
   delete from public.relay_heartbeats where ts < now() - make_interval(days => keep_days);
   delete from public.printer_events where ts < now() - make_interval(days => keep_days);
   delete from public.print_jobs where ended_at < now() - make_interval(days => keep_days);
+  delete from public.reservation_requests where created_at < now() - make_interval(days => keep_days);
 $$;
 -- Only the scheduler (and you, in the SQL Editor) may run it, never the website.
 revoke all on function public.delete_old_history(integer) from public, anon, authenticated;
