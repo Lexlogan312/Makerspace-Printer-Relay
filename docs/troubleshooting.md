@@ -98,3 +98,4 @@ The relay is the program on the Pi. Work down this list:
 | **Analytics look empty** | They build up from prints the relay has seen. A new setup has little to show for a few days |
 | **History doesn't go back far** | History older than 92 days is deleted every night, by design |
 | **A red X on GitHub (Actions tab)** | A change broke a test. Open the failed run to see which. Don't pull that version onto the Pi until it's fixed |
+| **A dashboard change didn't appear on the site** | Vercel → **Deployments**: if the latest one failed, a test or the type check failed and the previous version is still live. Its build log shows which. Fix it and push again |

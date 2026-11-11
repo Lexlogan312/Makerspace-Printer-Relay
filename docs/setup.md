@@ -15,7 +15,8 @@ Bambu printers ──Wi-Fi hotspot──▶ Raspberry Pi (relay) ──internet�
 |---|---|---|
 | **Printers** | Report their status over the Pi's private Wi-Fi hotspot, `MakerspacePrinters` | Each printer's touchscreen |
 | **Raspberry Pi** | Runs the relay: reads every printer and writes to Supabase | SSH or [Raspberry Pi Connect](https://connect.raspberrypi.com) |
-| **Supabase** | The database, staff sign-in, camera photos and live updates | [supabase.com/dashboard](https://supabase.com/dashboard) |
+| **Supabase** | The database, staff sign-in, camera photos and live updates, and the function that emails reservation requests | [supabase.com/dashboard](https://supabase.com/dashboard) |
+| **Makerspace Gmail** | Sends students' reservation requests to staff | [gmail.com](https://mail.google.com) |
 | **Dashboard** | The website students and staff use: https://onu-3dprint.vercel.app | [vercel.com](https://vercel.com) |
 | **Code** | This repository (relay) and the dashboard repository | GitHub |
 
@@ -105,4 +106,5 @@ account isn't a staff account".
 - **The relay restarts itself** if it crashes, and starts when the Pi boots.
 - **Old history** (over 92 days) is deleted every night; the dashboard shows at most 90 days.
 - **Automatic checks** run on GitHub after every push. A red X in a repository's **Actions** tab
-  means a change broke something; don't pull it onto the Pi until it's fixed.
+  means a change broke something; don't pull it onto the Pi until it's fixed. Vercel also runs
+  the dashboard's tests before deploying, so a broken change never replaces the live site.
