@@ -31,12 +31,20 @@ GCODE_STATES = [*GCODE_STATE_TO_STATUS, "UNKNOWN_STATE", None]
 STATUSES = {*GCODE_STATE_TO_STATUS.values(), "unknown", "offline"}
 FAMILIES = {family for _, family in HUE_FAMILIES} | {"black", "white", "gray", "beige", "brown", "pink"}
 
+
+
+def hex_digits(n: int):
+    """n hex digits, either case. (Built from characters rather than a regex: regex strategies
+    are slow to set up, which trips Hypothesis's speed check on slow hardware like a Pi 3B+.)"""
+    return st.text("0123456789abcdefABCDEF", min_size=n, max_size=n)
+
+
 # ───────────── Raw printer reports ─────────────
 # Printers report numbers as ints, floats or strings, and sometimes leave fields out or send junk.
 numberish = st.one_of(st.none(), st.integers(0, 100_000), st.floats(-50, 1_000, allow_nan=False),
                       st.integers(0, 100_000).map(str), st.text(max_size=5))
 tray_color = st.one_of(st.none(), st.text(max_size=10),
-                       st.from_regex(r"[0-9A-Fa-f]{8}", fullmatch=True), st.from_regex(r"[0-9A-Fa-f]{6}", fullmatch=True))
+                       hex_digits(8), hex_digits(6))
 tray = st.fixed_dictionaries({"id": st.one_of(st.integers(0, 3).map(str), st.none(), st.text(max_size=2))},
                              optional={"tray_type": st.sampled_from(["PLA", "PETG", "", None]), "tray_color": tray_color})
 ams = st.fixed_dictionaries({}, optional={
@@ -74,7 +82,7 @@ def test_build_status_handles_any_report(report, connected, last_message_at):
 
 
 # ───────────── Filament colors ─────────────
-hex_color = st.from_regex(r"#[0-9A-Fa-f]{6}", fullmatch=True)
+hex_color = hex_digits(6).map(lambda h: "#" + h)
 
 
 @given(hex_color)
